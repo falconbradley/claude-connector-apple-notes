@@ -1,0 +1,93 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/mcpb-manifest.schema.json",
+  "manifest_version": "0.4",
+  "name": "apple-notes",
+  "display_name": "Apple Notes",
+  "version": "0.1.0",
+  "description": "Fast access to Apple Notes on macOS — millisecond search over the local notes store (titles, snippets, and full body text), read notes, clickable open-in-Notes links, create notes, and append to existing ones.",
+  "long_description": "Connects Claude to Apple Notes on your Mac. Reads are served from Notes.app's local store (NoteStore.sqlite) — searching thousands of notes, including full body text, takes milliseconds and works even when Notes.app isn't running. Notes.app stays the sync and auth engine (including iCloud), so no credentials are ever handled. Writes (create note, append) go through Notes.app's native scripting interface.\n\n**Features:**\n- Millisecond search by text (title, snippet, and full body), folder, date range, and pinned status\n- Every result includes clickable links that open the note in Notes.app (works from chat via a localhost redirector)\n- Read full note bodies as plain text (extracted from Notes' internal format)\n- Browse all folders and accounts with note counts\n- Create new notes in any folder\n- Append text to existing notes\n- Password-protected notes are respected: metadata only, bodies stay encrypted\n\n**Requirements:**\n- macOS 13 Ventura or later\n- Notes set up with at least one account\n- Full Disk Access for the fast read path — enable \"uv\" in System Settings > Privacy & Security > Full Disk Access (without it, reads fall back to slower Notes.app scripting)\n- Automation permission for writes (macOS prompts automatically on first use)",
+  "author": {
+    "name": "Brad"
+  },
+  "icon": "icon.png",
+  "icons": [
+    {
+      "src": "icons/icon-128.png",
+      "size": "128x128"
+    },
+    {
+      "src": "icons/icon-256.png",
+      "size": "256x256"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "size": "512x512"
+    }
+  ],
+  "server": {
+    "type": "uv",
+    "entry_point": "src/apple_notes_mcp/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "${__dirname}",
+        "apple-notes-mcp"
+      ],
+      "env": {}
+    }
+  },
+  "tools": [
+    {
+      "name": "get_stats",
+      "description": "Get overall Notes statistics: total notes, pinned, trashed, password-protected, folder and account counts"
+    },
+    {
+      "name": "list_folders",
+      "description": "List all Notes folders across all accounts with note counts"
+    },
+    {
+      "name": "search_notes",
+      "description": "Search notes by text (title, snippet, and full body), folder, date range, and pinned status — results include clickable open-in-Notes links"
+    },
+    {
+      "name": "get_note",
+      "description": "Read a full note with extracted plain-text body and metadata"
+    },
+    {
+      "name": "get_note_link",
+      "description": "Get an applenotes:// deep link and a clickable http link that open the note in Notes.app"
+    },
+    {
+      "name": "open_note_in_notes",
+      "description": "Open a note directly in Notes.app (reliable alternative to applenotes:// links, which chat UIs block)"
+    },
+    {
+      "name": "create_note",
+      "description": "Create a new note in Notes.app, optionally in a specific folder"
+    },
+    {
+      "name": "append_to_note",
+      "description": "Append plain text to the end of an existing note"
+    }
+  ],
+  "keywords": [
+    "apple",
+    "notes",
+    "macos",
+    "search",
+    "icloud",
+    "folders",
+    "productivity"
+  ],
+  "license": "MIT",
+  "compatibility": {
+    "platforms": [
+      "darwin"
+    ],
+    "runtimes": {
+      "python": ">=3.11"
+    }
+  }
+}

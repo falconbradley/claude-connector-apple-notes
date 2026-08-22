@@ -1,0 +1,249 @@
+"""
+Hybrid engine: fast NoteStore.sqlite reads with a JXA fallback.
+
+Reads prefer the local store (millisecond queries, no Notes.app needed);
+when Full Disk Access is missing they transparently fall back to the
+slower JXA bridge. Writes always go through Notes.app scripting so that
+Notes.app owns every mutation and iCloud sync stays native.
+
+Set APPLE_NOTES_MCP_DISABLE_FAST=1 to force the JXA path (useful for
+debugging).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from datetime import datetime
+from typing import Optional
+
+from . import applescript
+from .models import (
+    Folder,
+    NoteDetail,
+    NotesStats,
+    NoteSummary,
+    SearchResult,
+    WriteResult,
+)
+from .notestore import NoteStore, NoteStoreError
+
+logger = logging.getLogger("apple_notes_mcp.hybrid")
+
+
+class HybridBridge:
+    def __init__(self) -> None:
+        self._store = NoteStore()
+        self._fast_disabled = os.environ.get(
+            "APPLE_NOTES_MCP_DISABLE_FAST", ""
+        ).strip() in {"1", "true", "yes"}
+
+    # ------------------------------------------------------------------
+    # Engine selection
+    # ------------------------------------------------------------------
+
+    def _fast(self) -> Optional[NoteStore]:
+        if self._fast_disabled:
+            return None
+        return self._store if self._store.available() else None
+
+    @property
+    def store(self) -> NoteStore:
+        return self._store
+
+    # ------------------------------------------------------------------
+    # Reads
+    # ------------------------------------------------------------------
+
+    def stats(self) -> NotesStats:
+        fast = self._fast()
+        if fast:
+            return fast.stats()
+        folders = applescript.list_folders()
+        return NotesStats(
+            total_notes=sum(f["note_count"] for f in folders),
+            pinned_notes=0,
+            trashed_notes=0,
+            password_protected_notes=0,
+            folder_count=len(folders),
+            account_count=len({f["account"] for f in folders}) or 1,
+        )
+
+    def list_folders(self) -> list[Folder]:
+        fast = self._fast()
+        if fast:
+            return fast.list_folders()
+        return [
+            Folder(
+                name=f["name"],
+                account=f["account"],
+                full_name=f"{f['account']}/{f['name']}",
+                note_count=f["note_count"],
+                is_trash=f["name"] == "Recently Deleted",
+            )
+            for f in applescript.list_folders()
+        ]
+
+    def search_notes(
+        self,
+        query: Optional[str] = None,
+        folder: Optional[str] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+        pinned_only: bool = False,
+        include_trashed: bool = False,
+        search_bodies: bool = True,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> SearchResult:
+        fast = self._fast()
+        if fast:
+            return fast.search_notes(
+                query=query, folder=folder, since=since, until=until,
+                pinned_only=pinned_only, include_trashed=include_trashed,
+                search_bodies=search_bodies, limit=limit, offset=offset,
+            )
+        raw = applescript.search_notes(query, folder, limit + offset)
+        notes = [
+            NoteSummary(
+                id=self._pk_from_coredata_id(n["id"]) or 0,
+                identifier="",
+                folder=folder or "Notes",
+                account="",
+                title=n["title"],
+                modified=(
+                    datetime.fromisoformat(n["modified"].replace("Z", "+00:00"))
+                    if n.get("modified") else None
+                ),
+            )
+            for n in raw[offset:offset + limit]
+        ]
+        return SearchResult(
+            total=len(raw), offset=offset, limit=limit,
+            notes=notes, engine="applescript",
+        )
+
+    def get_note(self, note_id: int) -> Optional[NoteDetail]:
+        fast = self._fast()
+        if fast:
+            return fast.get_note(note_id)
+        coredata_id = self._coredata_id_guess(note_id)
+        if not coredata_id:
+            return None
+        raw = applescript.get_note_body(coredata_id)
+        if not raw:
+            return None
+        return NoteDetail(
+            id=note_id,
+            identifier="",
+            folder="",
+            account="",
+            title=raw["title"],
+            body_text=raw.get("plaintext"),
+            created=(
+                datetime.fromisoformat(raw["created"].replace("Z", "+00:00"))
+                if raw.get("created") else None
+            ),
+            modified=(
+                datetime.fromisoformat(raw["modified"].replace("Z", "+00:00"))
+                if raw.get("modified") else None
+            ),
+            is_password_protected=bool(raw.get("password_protected")),
+        )
+
+    # ------------------------------------------------------------------
+    # Opening notes
+    # ------------------------------------------------------------------
+
+    def open_note(self, note_id: int) -> bool:
+        """Front Notes.app on a note. Tries the applenotes:// deep link
+        first (works without Automation permission), then JXA show()."""
+        fast = self._fast()
+        if fast:
+            info = fast.resolve_note(note_id)
+            if info is None:
+                return False
+            identifier = info.get("identifier")
+            if identifier:
+                from .weblink import WebLinkServer
+                url = f"applenotes://showNote?identifier={identifier}"
+                if WebLinkServer.open_url_with_macos(url):
+                    return True
+            coredata_id = info.get("coredata_id")
+        else:
+            coredata_id = self._coredata_id_guess(note_id)
+        if not coredata_id:
+            return False
+        try:
+            return applescript.show_note(coredata_id)
+        except applescript.NotesScriptError:
+            logger.exception("show_note failed for %s", coredata_id)
+            return False
+
+    def notes_link(self, note_id: int) -> Optional[str]:
+        fast = self._fast()
+        if fast:
+            info = fast.resolve_note(note_id)
+            if info and info.get("identifier"):
+                return f"applenotes://showNote?identifier={info['identifier']}"
+        return None
+
+    # ------------------------------------------------------------------
+    # Writes (always JXA)
+    # ------------------------------------------------------------------
+
+    def create_note(
+        self, title: str, body_text: str, folder: Optional[str] = None
+    ) -> WriteResult:
+        raw = applescript.create_note(title, body_text, folder)
+        pk = self._pk_from_coredata_id(raw.get("id", ""))
+        return WriteResult(
+            success=True,
+            id=pk,
+            title=raw.get("name") or title,
+            folder=raw.get("folder"),
+            notes_link=self.notes_link(pk) if pk else None,
+        )
+
+    def append_to_note(self, note_id: int, body_text: str) -> WriteResult:
+        fast = self._fast()
+        coredata_id = None
+        if fast:
+            info = fast.resolve_note(note_id)
+            coredata_id = info.get("coredata_id") if info else None
+        if not coredata_id:
+            coredata_id = self._coredata_id_guess(note_id)
+        if not coredata_id:
+            return WriteResult(
+                success=False, id=note_id,
+                detail=f"Could not resolve note id {note_id}",
+            )
+        raw = applescript.append_to_note(coredata_id, body_text)
+        return WriteResult(
+            success=True,
+            id=note_id,
+            title=raw.get("name"),
+            notes_link=self.notes_link(note_id),
+        )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _coredata_id_guess(self, note_id: int) -> Optional[str]:
+        """Best-effort x-coredata id without the fast path: the store UUID
+        is still readable in some FDA-less setups; otherwise None."""
+        try:
+            return self._store.coredata_id(note_id)
+        except NoteStoreError:
+            return None
+
+    @staticmethod
+    def _pk_from_coredata_id(coredata_id: str) -> Optional[int]:
+        # x-coredata://UUID/ICNote/p123 -> 123
+        if "/ICNote/p" in (coredata_id or ""):
+            try:
+                return int(coredata_id.rsplit("p", 1)[1])
+            except ValueError:
+                return None
+        return None
