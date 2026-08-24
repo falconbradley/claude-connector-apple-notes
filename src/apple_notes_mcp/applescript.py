@@ -163,6 +163,97 @@ function run(argv) {
     return result
 
 
+def replace_note_body(
+    coredata_id: str, body_text: str, title: Optional[str] = None
+) -> dict[str, Any]:
+    """Overwrite an existing note's body.
+
+    Notes takes a note's title from the first line of its body, so a
+    title given here is emitted as that first line. Passing None lets
+    the new body's own first line become the title — callers that mean
+    to keep the current title must pass it explicitly (HybridBridge
+    does this for them).
+    """
+    script = _COMMON + """
+function run(argv) {
+    const p = JSON.parse(argv[0]);
+    const notes = app_();
+    let note;
+    try { note = notes.notes.byId(p.id); note.name(); }
+    catch (e) { return JSON.stringify({error: 'note not found: ' + p.id}); }
+    if (note.passwordProtected()) {
+        return JSON.stringify({error: 'note is password-protected'});
+    }
+    note.body = p.html;
+    return JSON.stringify({id: note.id(), name: note.name()});
+}
+"""
+    result = _run_jxa(
+        script,
+        {"id": coredata_id, "html": text_to_note_html(title, body_text)},
+    )
+    if isinstance(result, dict) and result.get("error"):
+        raise NotesScriptError(result["error"])
+    return result
+
+
+def create_folder(name: str, account: Optional[str] = None) -> dict[str, Any]:
+    """Create a folder in the named account (default account if omitted)."""
+    script = _COMMON + """
+function run(argv) {
+    const p = JSON.parse(argv[0]);
+    const notes = app_();
+    let acct = null;
+    if (p.account) {
+        const target = p.account.toLowerCase();
+        for (const a of notes.accounts()) {
+            if (a.name().toLowerCase() === target) { acct = a; break; }
+        }
+        if (!acct) return JSON.stringify({error: 'account not found: ' + p.account});
+    } else {
+        acct = notes.defaultAccount();
+    }
+    for (const f of acct.folders()) {
+        if (f.name().toLowerCase() === p.name.toLowerCase()) {
+            return JSON.stringify({error: 'folder already exists: ' + f.name()});
+        }
+    }
+    const folder = notes.Folder({name: p.name});
+    acct.folders.push(folder);
+    return JSON.stringify({name: folder.name(), account: acct.name()});
+}
+"""
+    result = _run_jxa(script, {"name": name, "account": account})
+    if isinstance(result, dict) and result.get("error"):
+        raise NotesScriptError(result["error"])
+    return result
+
+
+def move_note(coredata_id: str, folder: str) -> dict[str, Any]:
+    """Move a note into an existing folder (name or "Account/Folder")."""
+    script = _COMMON + """
+function run(argv) {
+    const p = JSON.parse(argv[0]);
+    const notes = app_();
+    let note;
+    try { note = notes.notes.byId(p.id); note.name(); }
+    catch (e) { return JSON.stringify({error: 'note not found: ' + p.id}); }
+    const dest = findFolder(notes, p.folder);
+    if (!dest) return JSON.stringify({error: 'folder not found: ' + p.folder});
+    notes.move(note, {to: dest});
+    // move() invalidates the old specifier; re-read through the folder.
+    return JSON.stringify({
+        id: p.id, name: note.name(),
+        folder: dest.name(), account: dest.container().name()
+    });
+}
+"""
+    result = _run_jxa(script, {"id": coredata_id, "folder": folder})
+    if isinstance(result, dict) and result.get("error"):
+        raise NotesScriptError(result["error"])
+    return result
+
+
 def show_note(coredata_id: str) -> bool:
     """Front Notes.app with the given note selected."""
     script = _COMMON + """
@@ -254,3 +345,33 @@ function run(argv) {
 }
 """
     return _run_jxa(script, {"id": coredata_id})
+
+
+# ---------------------------------------------------------------------------
+# Selection (scripting-only — the local store records no UI selection)
+# ---------------------------------------------------------------------------
+
+def get_selection() -> list[str]:
+    """Return the Core Data ids of the notes selected in Notes.app.
+
+    Only ids are read here: selection specifiers resolve their id
+    reliably, and callers re-read the note through the fast path to get
+    title/body/folder. Returns [] when Notes.app isn't running, since
+    launching it would front an app with nothing selected.
+    """
+    script = _COMMON + """
+function run() {
+    const notes = Application('Notes');
+    if (!notes.running()) return JSON.stringify([]);
+    let sel;
+    try { sel = notes.selection(); }
+    catch (e) { return JSON.stringify([]); }
+    const out = [];
+    for (const n of sel) {
+        try { out.push(n.id()); } catch (e) {}
+    }
+    return JSON.stringify(out);
+}
+"""
+    result = _run_jxa(script)
+    return [i for i in (result or []) if isinstance(i, str)]

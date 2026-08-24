@@ -3,9 +3,9 @@
   "manifest_version": "0.4",
   "name": "apple-notes",
   "display_name": "Apple Notes",
-  "version": "0.1.0",
-  "description": "Fast access to Apple Notes on macOS — millisecond search over the local notes store (titles, snippets, and full body text), read notes, clickable open-in-Notes links, create notes, and append to existing ones.",
-  "long_description": "Connects Claude to Apple Notes on your Mac. Reads are served from Notes.app's local store (NoteStore.sqlite) — searching thousands of notes, including full body text, takes milliseconds and works even when Notes.app isn't running. Notes.app stays the sync and auth engine (including iCloud), so no credentials are ever handled. Writes (create note, append) go through Notes.app's native scripting interface.\n\n**Features:**\n- Millisecond search by text (title, snippet, and full body), folder, date range, and pinned status\n- Every result includes clickable links that open the note in Notes.app (works from chat via a localhost redirector)\n- Read full note bodies as plain text (extracted from Notes' internal format)\n- Browse all folders and accounts with note counts\n- Create new notes in any folder\n- Append text to existing notes\n- Password-protected notes are respected: metadata only, bodies stay encrypted\n\n**Requirements:**\n- macOS 13 Ventura or later\n- Notes set up with at least one account\n- Full Disk Access for the fast read path — enable \"uv\" in System Settings > Privacy & Security > Full Disk Access (without it, reads fall back to slower Notes.app scripting)\n- Automation permission for writes (macOS prompts automatically on first use)",
+  "version": "0.2.0",
+  "description": "Fast access to Apple Notes on macOS — millisecond search over the local notes store (titles, snippets, and full body text), read notes, see what's selected in Notes.app, clickable open-in-Notes links, and write: create notes and folders, append to or rewrite notes, and move notes between folders.",
+  "long_description": "Connects Claude to Apple Notes on your Mac. Reads are served from Notes.app's local store (NoteStore.sqlite) — searching thousands of notes, including full body text, takes milliseconds and works even when Notes.app isn't running. Notes.app stays the sync and auth engine (including iCloud), so no credentials are ever handled. Writes go through Notes.app's native scripting interface.\n\n**Features:**\n- Millisecond search by text (title, snippet, and full body), folder, date range, and pinned status\n- Every result includes clickable links that open the note in Notes.app (works from chat via a localhost redirector)\n- Read full note bodies as plain text (extracted from Notes' internal format)\n- Read the notes you currently have selected in Notes.app\n- Browse all folders and accounts with note counts\n- Create notes and folders, append to notes, rewrite a note's body, and move notes between folders\n- Password-protected notes are respected: metadata only, bodies stay encrypted\n\n**Requirements:**\n- macOS 13 Ventura or later\n- Notes set up with at least one account\n- Full Disk Access for the fast read path — enable \"uv\" in System Settings > Privacy & Security > Full Disk Access (without it, reads fall back to slower Notes.app scripting)\n- Automation permission for writes (macOS prompts automatically on first use)",
   "author": {
     "name": "Brad"
   },
@@ -64,12 +64,28 @@
       "description": "Open a note directly in Notes.app (reliable alternative to applenotes:// links, which chat UIs block)"
     },
     {
+      "name": "get_selected_notes",
+      "description": "Get the notes currently selected in Notes.app, including their bodies — use for \"this note\" / \"what I'm looking at\""
+    },
+    {
       "name": "create_note",
       "description": "Create a new note in Notes.app, optionally in a specific folder"
     },
     {
       "name": "append_to_note",
       "description": "Append plain text to the end of an existing note"
+    },
+    {
+      "name": "update_note",
+      "description": "Replace an existing note's body with new text (overwrites; use append_to_note to add without replacing)"
+    },
+    {
+      "name": "create_folder",
+      "description": "Create a new folder in Notes.app, optionally in a specific account"
+    },
+    {
+      "name": "move_note",
+      "description": "Move a note into an existing folder"
     }
   ],
   "keywords": [

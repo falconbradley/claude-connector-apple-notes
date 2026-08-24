@@ -24,6 +24,7 @@ from .models import (
     NotesStats,
     NoteSummary,
     SearchResult,
+    SelectionResult,
     WriteResult,
 )
 from .notestore import NoteStore, NoteStoreError
@@ -206,13 +207,7 @@ class HybridBridge:
         )
 
     def append_to_note(self, note_id: int, body_text: str) -> WriteResult:
-        fast = self._fast()
-        coredata_id = None
-        if fast:
-            info = fast.resolve_note(note_id)
-            coredata_id = info.get("coredata_id") if info else None
-        if not coredata_id:
-            coredata_id = self._coredata_id_guess(note_id)
+        coredata_id = self._resolve_coredata_id(note_id)
         if not coredata_id:
             return WriteResult(
                 success=False, id=note_id,
@@ -226,9 +221,103 @@ class HybridBridge:
             notes_link=self.notes_link(note_id),
         )
 
+    def replace_note_body(
+        self, note_id: int, body_text: str, title: Optional[str] = None
+    ) -> WriteResult:
+        coredata_id = self._resolve_coredata_id(note_id)
+        if not coredata_id:
+            return WriteResult(
+                success=False, id=note_id,
+                detail=f"Could not resolve note id {note_id}",
+            )
+        if title is None:
+            # Notes derives a note's title from the first line of its
+            # body, so replacing the body without re-emitting the title
+            # would silently rename the note to the new first line.
+            title = self._title_to_preserve(note_id, body_text)
+        raw = applescript.replace_note_body(coredata_id, body_text, title)
+        return WriteResult(
+            success=True,
+            id=note_id,
+            title=raw.get("name"),
+            notes_link=self.notes_link(note_id),
+        )
+
+    def move_note(self, note_id: int, folder: str) -> WriteResult:
+        coredata_id = self._resolve_coredata_id(note_id)
+        if not coredata_id:
+            return WriteResult(
+                success=False, id=note_id,
+                detail=f"Could not resolve note id {note_id}",
+            )
+        raw = applescript.move_note(coredata_id, folder)
+        return WriteResult(
+            success=True,
+            id=note_id,
+            title=raw.get("name"),
+            folder=raw.get("folder"),
+            notes_link=self.notes_link(note_id),
+        )
+
+    def create_folder(self, name: str, account: Optional[str] = None) -> Folder:
+        raw = applescript.create_folder(name, account)
+        acct = raw.get("account") or ""
+        fname = raw.get("name") or name
+        return Folder(
+            name=fname,
+            account=acct,
+            full_name=f"{acct}/{fname}" if acct else fname,
+            note_count=0,
+        )
+
+    # ------------------------------------------------------------------
+    # Selection (scripting-only; re-read through the fast path)
+    # ------------------------------------------------------------------
+
+    def selected_notes(self, limit: int = 25) -> SelectionResult:
+        ids = applescript.get_selection()
+        pks = [
+            pk for pk in (self._pk_from_coredata_id(i) for i in ids)
+            if pk is not None
+        ]
+        fast = self._fast()
+        notes: list[NoteDetail] = []
+        for pk in pks[:limit]:
+            detail = self.get_note(pk)
+            if detail is not None:
+                notes.append(detail)
+        return SelectionResult(
+            count=len(pks),
+            returned=len(notes),
+            notes=notes,
+            engine="sqlite" if fast else "applescript",
+        )
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _title_to_preserve(self, note_id: int, body_text: str) -> Optional[str]:
+        """The note's current title, unless the new body already opens
+        with it (which would otherwise duplicate the title line)."""
+        current = self.get_note(note_id)
+        if current is None or not current.title:
+            return None
+        first_line = body_text.split("\n", 1)[0].strip()
+        if first_line == current.title.strip():
+            return None
+        return current.title
+
+    def _resolve_coredata_id(self, note_id: int) -> Optional[str]:
+        """The x-coredata id Notes.app scripting needs, via whichever
+        engine can supply it."""
+        fast = self._fast()
+        if fast:
+            info = fast.resolve_note(note_id)
+            coredata_id = info.get("coredata_id") if info else None
+            if coredata_id:
+                return coredata_id
+        return self._coredata_id_guess(note_id)
 
     def _coredata_id_guess(self, note_id: int) -> Optional[str]:
         """Best-effort x-coredata id without the fast path: the store UUID

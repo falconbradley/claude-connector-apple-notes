@@ -20,8 +20,12 @@ Tools provided
   get_note             - Full note with extracted plain-text body
   get_note_link        - applenotes:// deep link + clickable open link
   open_note_in_notes   - Front Notes.app on a note directly
+  get_selected_notes   - The notes currently selected in Notes.app
   create_note          - Create a new note (optionally in a folder)
   append_to_note       - Append text to an existing note
+  update_note          - Replace a note's body (overwrites)
+  create_folder        - Create a new folder
+  move_note            - Move a note to another folder
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ import sys
 from datetime import datetime
 from typing import Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from .hybrid import HybridBridge
 from .models import (
@@ -40,6 +44,7 @@ from .models import (
     NoteLink,
     NotesStats,
     SearchResult,
+    SelectionResult,
     WriteResult,
 )
 from .weblink import WebLinkServer
@@ -65,16 +70,17 @@ _bridge: Optional[HybridBridge] = None
 _weblink: Optional[WebLinkServer] = None
 
 # ---------------------------------------------------------------------------
-# FastMCP app
+# MCP server app
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP(
+mcp = MCPServer(
     "Apple Notes",
     instructions=(
         "Fast access to Apple Notes on this Mac. You can list folders, "
         "search notes (title, snippet, and full body text), read notes, "
-        "open them in Notes.app, create new notes, and append to existing "
-        "ones. Use the open_link field for clickable links in responses — "
+        "see what the user has selected in Notes.app, open notes, create "
+        "notes and folders, append to or rewrite notes, and move notes "
+        "between folders. Use the open_link field for clickable links — "
         "chat UIs block the applenotes:// scheme but open http links fine."
     ),
 )
@@ -219,6 +225,20 @@ def open_note_in_notes(note_id: int) -> str:
     )
 
 
+@mcp.tool()
+def get_selected_notes(limit: int = 25) -> SelectionResult:
+    """Get the notes currently selected in Notes.app, including bodies.
+
+    Use this when the user refers to what they're looking at — "this
+    note", "the note I have open", "summarize what's on screen".
+
+    Returns count (how many are selected) alongside the notes actually
+    included, so a selection larger than limit is visible rather than
+    silently truncated. Returns nothing when Notes.app isn't running.
+    """
+    return _require_bridge().selected_notes(limit=max(1, min(limit, 100)))
+
+
 # ---------------------------------------------------------------------------
 # Tools — writes (via Notes.app scripting; Automation permission)
 # ---------------------------------------------------------------------------
@@ -253,6 +273,60 @@ def append_to_note(note_id: int, text: str) -> WriteResult:
     Line breaks in text are preserved. The edit is performed by
     Notes.app scripting, so it syncs natively."""
     result = _require_bridge().append_to_note(note_id, text)
+    if result.success and result.id:
+        result.open_link = _require_weblink().open_link(result.id)
+    return result
+
+
+@mcp.tool()
+def update_note(
+    note_id: int,
+    body: str,
+    title: Optional[str] = None,
+) -> WriteResult:
+    """Replace an existing note's body with new text.
+
+    This OVERWRITES the note — the previous body is not recoverable from
+    this server. Prefer append_to_note when adding to a note. Read the
+    note first with get_note if you need to preserve existing content.
+
+    Args:
+        note_id: The note to rewrite.
+        body: The new plain-text body; line breaks are preserved.
+        title: Optional new title. Omit to keep the note's current
+            title — Notes takes a note's title from the first line of
+            its body, so the existing title is re-emitted as that line.
+
+    Password-protected notes are refused."""
+    result = _require_bridge().replace_note_body(note_id, body, title)
+    if result.success and result.id:
+        result.open_link = _require_weblink().open_link(result.id)
+    return result
+
+
+@mcp.tool()
+def create_folder(name: str, account: Optional[str] = None) -> Folder:
+    """Create a new folder in Notes.app.
+
+    Args:
+        name: Folder name. Fails if the account already has one.
+        account: Account name (e.g. "iCloud"). Defaults to the default
+            account.
+    """
+    return _require_bridge().create_folder(name, account)
+
+
+@mcp.tool()
+def move_note(note_id: int, folder: str) -> WriteResult:
+    """Move a note into an existing folder.
+
+    Args:
+        note_id: The note to move.
+        folder: Destination folder name (e.g. "Recipes") or
+            "Account/Folder". Must already exist — use create_folder
+            first if needed.
+    """
+    result = _require_bridge().move_note(note_id, folder)
     if result.success and result.id:
         result.open_link = _require_weblink().open_link(result.id)
     return result

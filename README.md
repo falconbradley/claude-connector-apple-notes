@@ -1,6 +1,6 @@
 # Apple Notes MCP
 
-A Claude Desktop extension that gives **Claude fast access to Apple Notes** on macOS. Reads come straight from Notes.app's local store — searching thousands of notes, *including full body text*, takes **milliseconds** and works even when Notes.app isn't running — while Notes.app remains the sync and auth engine (iCloud, On My Mac, anything Notes supports), so no credentials are ever handled. Writes (create, append) go through Notes.app's native scripting interface.
+A Claude Desktop extension that gives **Claude fast access to Apple Notes** on macOS. Reads come straight from Notes.app's local store — searching thousands of notes, *including full body text*, takes **milliseconds** and works even when Notes.app isn't running — while Notes.app remains the sync and auth engine (iCloud, On My Mac, anything Notes supports), so no credentials are ever handled. Writes — create, append, rewrite, new folders, move — go through Notes.app's native scripting interface.
 
 Packaged as an [MCPB desktop extension](https://support.claude.com/en/articles/12922929-building-desktop-extensions-with-mcpb) with the Apple Notes icon and one-click install.
 
@@ -18,8 +18,12 @@ Sibling project: [claude-connector-apple-mail](https://github.com/falconbradley/
 | `get_note` | Full note with extracted plain-text body and metadata |
 | `get_note_link` | An `applenotes://` deep link + a clickable http link for the note |
 | `open_note_in_notes` | Open a note directly in Notes.app (for chat UIs that block custom URL schemes) |
+| `get_selected_notes` | The notes you currently have selected in Notes.app, with bodies — for "this note" / "what I'm looking at" |
 | `create_note` | Create a new note (optionally in a specific folder) — synced natively by Notes.app |
 | `append_to_note` | Append plain text to an existing note |
+| `update_note` | Replace a note's body (overwrites — use `append_to_note` to add without replacing). Keeps the note's title unless you pass a new one |
+| `create_folder` | Create a new folder in any account |
+| `move_note` | Move a note into an existing folder |
 
 ## How it works
 
@@ -51,7 +55,13 @@ There is also an `open_note_in_notes` tool so Claude can jump to a note directly
 
 When Full Disk Access is missing, reads transparently fall back to a **JXA (JavaScript for Automation)** bridge scripting Notes.app (much slower, and Notes.app must be running). Search results include an `engine` field (`"sqlite"` or `"applescript"`) so you can tell which path served them. Set `APPLE_NOTES_MCP_DISABLE_FAST=1` to force the JXA path.
 
-Writes — creating notes, appending text — always go through Notes.app scripting (Automation permission), so Notes.app owns every mutation and syncs it to iCloud itself. The note ids used by scripting (`x-coredata://…/ICNote/p<n>`) line up 1:1 with the fast path's ids, so the two engines compose cleanly.
+Writes — creating notes and folders, appending, rewriting a body, moving notes — always go through Notes.app scripting (Automation permission), so Notes.app owns every mutation and syncs it to iCloud itself. The note ids used by scripting (`x-coredata://…/ICNote/p<n>`) line up 1:1 with the fast path's ids, so the two engines compose cleanly.
+
+Notes derives a note's **title from the first line of its body**, which makes `update_note` subtler than it looks: replacing the body would rename the note to whatever the new first line is. So when you don't pass a `title`, the server reads the note's current title and re-emits it as the first line — the note keeps its name — and skips that if your new body already starts with the title, so it never ends up duplicated. Pass `title` explicitly to rename.
+
+### Reading the current selection
+
+`get_selected_notes` is the one read with no fast-path equivalent: the local store records no UI selection, so it asks Notes.app. Selection specifiers expose little beyond an id, so the ids are handed straight back to the normal read path — meaning titles and bodies come back correctly, and the selection tool costs one cheap scripting call. It returns `count` (how many are selected) alongside the notes actually included, so a selection larger than `limit` is visible rather than silently truncated.
 
 ---
 
@@ -117,6 +127,9 @@ Once installed, just ask Claude naturally:
 - *"Read my 'Chase IRA Accounts' note"*
 - *"Create a note in Recipes titled 'Weeknight pasta' with this ingredient list…"*
 - *"Append today's meeting takeaways to my 'Meeting notes' note"*
+- *"Summarize the note I have open"* / *"What am I looking at?"*
+- *"Rewrite this note's body to clean up the formatting"*
+- *"Make a folder called Travel and move my Japan notes into it"*
 - *"Open that note in Notes"*
 
 ---
@@ -154,8 +167,17 @@ claude-connector-apple-notes/
 │       ├── weblink.py         # Localhost open-in-Notes redirector
 │       ├── selftest.py        # Fast-path verification
 │       └── models.py          # Pydantic data models
-└── tests/                     # Unit tests (synthetic store fixture)
+├── tests/                     # Unit tests (synthetic store fixture, mocked JXA)
+└── .github/workflows/         # CI (tests + manifest checks) and release
 ```
+
+### Tests
+
+```bash
+uv run pytest -q
+```
+
+No test touches Notes.app or needs Full Disk Access: the store tests build a synthetic `NoteStore.sqlite`, and the write/selection tests mock the JXA bridge. `tests/test_server.py` additionally launches the real server over stdio and completes an MCP handshake, which is what catches SDK drift — the store tests pass perfectly well against a server module that no longer imports.
 
 ---
 
@@ -167,13 +189,14 @@ claude-connector-apple-notes/
 - [x] Read full note body as plain text
 - [x] Clickable open-in-Notes links
 
-**Phase 2 — Write**
+**Phase 2 — Write (v0.2)**
 - [x] Create notes (in any folder)
 - [x] Append to existing notes
-- [ ] Replace/update note body
-- [ ] Create folders
-- [ ] Move notes between folders
-- [ ] Pin / unpin
+- [x] Replace/update note body
+- [x] Create folders
+- [x] Move notes between folders
+- [x] Read the current Notes.app selection
+- [ ] ~~Pin / unpin~~ — **not possible.** Notes.app's scripting dictionary exposes no `pinned` property (verified against `sdef /System/Applications/Notes.app`), so the only route would be writing `ZISPINNED` directly into `NoteStore.sqlite`. That would break the read-only-store invariant and race Core Data and CloudKit sync, so this server won't do it.
 
 **Phase 3 — Rich content**
 - [ ] Checklists (read + toggle)
@@ -185,7 +208,9 @@ claude-connector-apple-notes/
 
 ## Security & privacy
 
-- Read operations never modify your notes: the store is opened with `PRAGMA query_only` and URI `mode=ro`. Write operations go through Notes.app scripting and are limited to: creating new notes and appending to existing ones — nothing is ever overwritten or deleted.
+- Read operations never modify your notes: the store is opened with `PRAGMA query_only` and URI `mode=ro` — the local store is never written to, by any code path.
+- Write operations go through Notes.app scripting only, and **nothing is ever deleted** — there is no delete tool, and no tool removes a note or a folder. One tool does overwrite: `update_note` replaces a note's body, and the previous body is not recoverable from this server (Notes.app's own version history still applies). Every other write is additive: `create_note`, `create_folder`, `append_to_note`, and `move_note` (which relocates a note without altering its content).
+- `update_note` refuses password-protected notes.
 - Password-protected (locked) notes stay locked: their bodies are encrypted at rest and this server never attempts decryption — metadata only.
 - No data leaves your machine — this is a local MCP server. Notes.app keeps sole custody of account credentials (iCloud sign-in etc.).
 - The open-in-Notes link redirector binds to 127.0.0.1 only, requires a per-install random token on every request, and can only focus Notes.app on a note — it never serves note content.
@@ -206,6 +231,12 @@ Notes.app must be running for writes. The server launches it automatically, but 
 
 **Extension doesn't appear after install**
 Make sure you're running a recent version of Claude Desktop that supports MCPB extensions. Restart Claude Desktop after installing.
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 

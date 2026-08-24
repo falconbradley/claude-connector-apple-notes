@@ -51,6 +51,20 @@ class SearchResult(BaseModel):
     engine: Optional[str] = None
 
 
+class SelectionResult(BaseModel):
+    """The notes currently selected in Notes.app, with bodies.
+
+    Selection is only observable through Notes.app scripting; the notes
+    themselves are re-read through the normal engine, so titles and
+    bodies come back correct even though selection specifiers expose
+    little more than an id.
+    """
+    count: int                      # notes selected in Notes.app
+    returned: int                   # notes included below (see limit)
+    notes: list[NoteDetail]
+    engine: Optional[str] = None
+
+
 class NotesStats(BaseModel):
     total_notes: int
     pinned_notes: int

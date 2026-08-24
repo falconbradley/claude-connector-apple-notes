@@ -28,5 +28,5 @@ Thumbs.db
 # Logs
 *.log
 
-# uv
-uv.lock
+# uv — uv.lock IS committed: it is packed into the .mcpb and pins the
+# dependency set the shipped server runs against.
