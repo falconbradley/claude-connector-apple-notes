@@ -3,6 +3,47 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-08-24
+
+### Fixed
+
+- **`append_to_note` and `update_note` no longer destroy checklists.** Both
+  hand Notes.app an HTML body, and that representation cannot carry checkbox
+  state in either direction — verified both ways: Notes renders a checklist as
+  plain `<ul><li>` with no checked attribute, and writing
+  `<ul class="checklist"><li checked>` back produces an ordinary bulleted list.
+  So appending a single line to a checklist note silently converted every
+  checkbox to a bullet and erased which items were done. Both tools now detect
+  checklists through the local store and refuse, explaining why; the refusal
+  cannot be overridden. Present since 0.1.0.
+- Both write tools also refuse notes carrying very large attachments, which
+  Notes.app inlines as base64 when rewriting a body (one real note produced an
+  11 MB body). Overridable with `force=true`, since that is a performance risk
+  rather than data loss.
+
+### Added
+
+- `list_note_attachments` — everything embedded in a note: images, PDFs,
+  scans, drawings, tables, links. Reports a friendly `kind` alongside the raw
+  UTI, and link attachments expose their target `url`.
+- `get_attachment` — one attachment by id, including its path on disk.
+- Attachments resolve entirely from the local store, with no scripting and no
+  Notes.app: media files are located under
+  `Accounts/<account>/Media/<media-uuid>/<generation>/<filename>`, globbing the
+  generation directory since it changes when an attachment is edited.
+  `has_local_file` distinguishes "file present on disk" from attachments that
+  have no file by design (links, tables, drawings).
+- `get_note` now reports `attachment_count` and `has_checklist`.
+
+### Known limits
+
+- **Checklist state is read-only.** It can be decoded from the local store but
+  never written, for the reason above. Rendering item text and state in
+  `get_note` is planned; toggling is struck from the roadmap.
+- Tables are stored as attachments with a gzipped CRDT payload in
+  `ZMERGEABLEDATA1`. Listed as attachments of kind `table`; decoding their
+  contents is not implemented.
+
 ## [0.2.0] — 2026-08-23
 
 ### Fixed
@@ -59,5 +100,6 @@ and full body text, note bodies), clickable open-in-Notes links, a JXA fallback
 for when Full Disk Access is unavailable, and native-scripting writes
 (`create_note`, `append_to_note`).
 
+[0.3.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.3.0
 [0.2.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.2.0
 [0.1.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.1.0

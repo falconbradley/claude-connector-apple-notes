@@ -3,9 +3,9 @@
   "manifest_version": "0.4",
   "name": "apple-notes",
   "display_name": "Apple Notes",
-  "version": "0.2.0",
-  "description": "Fast access to Apple Notes on macOS — millisecond search over the local notes store (titles, snippets, and full body text), read notes, see what's selected in Notes.app, clickable open-in-Notes links, and write: create notes and folders, append to or rewrite notes, and move notes between folders.",
-  "long_description": "Connects Claude to Apple Notes on your Mac. Reads are served from Notes.app's local store (NoteStore.sqlite) — searching thousands of notes, including full body text, takes milliseconds and works even when Notes.app isn't running. Notes.app stays the sync and auth engine (including iCloud), so no credentials are ever handled. Writes go through Notes.app's native scripting interface.\n\n**Features:**\n- Millisecond search by text (title, snippet, and full body), folder, date range, and pinned status\n- Every result includes clickable links that open the note in Notes.app (works from chat via a localhost redirector)\n- Read full note bodies as plain text (extracted from Notes' internal format)\n- Read the notes you currently have selected in Notes.app\n- Browse all folders and accounts with note counts\n- Create notes and folders, append to notes, rewrite a note's body, and move notes between folders\n- Password-protected notes are respected: metadata only, bodies stay encrypted\n\n**Requirements:**\n- macOS 13 Ventura or later\n- Notes set up with at least one account\n- Full Disk Access for the fast read path — enable \"uv\" in System Settings > Privacy & Security > Full Disk Access (without it, reads fall back to slower Notes.app scripting)\n- Automation permission for writes (macOS prompts automatically on first use)",
+  "version": "0.3.0",
+  "description": "Fast access to Apple Notes on macOS — millisecond search over the local notes store (titles, snippets, and full body text), read notes and their attachments, see what's selected in Notes.app, clickable open-in-Notes links, and write: create notes and folders, append to or rewrite notes, and move notes between folders.",
+  "long_description": "Connects Claude to Apple Notes on your Mac. Reads are served from Notes.app's local store (NoteStore.sqlite) — searching thousands of notes, including full body text, takes milliseconds and works even when Notes.app isn't running. Notes.app stays the sync and auth engine (including iCloud), so no credentials are ever handled. Writes go through Notes.app's native scripting interface.\n\n**Features:**\n- Millisecond search by text (title, snippet, and full body), folder, date range, and pinned status\n- Every result includes clickable links that open the note in Notes.app (works from chat via a localhost redirector)\n- Read full note bodies as plain text (extracted from Notes' internal format)\n- Read the notes you currently have selected in Notes.app\n- List and open note attachments — images, PDFs, scans, drawings, tables and links — resolved to real files on disk\n- Browse all folders and accounts with note counts\n- Create notes and folders, append to notes, rewrite a note's body, and move notes between folders\n- Password-protected notes are respected: metadata only, bodies stay encrypted\n- Notes containing checklists are protected from rewrites, which would otherwise destroy their checked state\n\n**Requirements:**\n- macOS 13 Ventura or later\n- Notes set up with at least one account\n- Full Disk Access for the fast read path — enable \"uv\" in System Settings > Privacy & Security > Full Disk Access (without it, reads fall back to slower Notes.app scripting)\n- Automation permission for writes (macOS prompts automatically on first use)",
   "author": {
     "name": "Brad"
   },
@@ -68,16 +68,24 @@
       "description": "Get the notes currently selected in Notes.app, including their bodies — use for \"this note\" / \"what I'm looking at\""
     },
     {
+      "name": "list_note_attachments",
+      "description": "List everything embedded in a note — images, PDFs, scans, drawings, tables, and links — with on-disk file paths where available"
+    },
+    {
+      "name": "get_attachment",
+      "description": "Get one attachment by id, including its path on disk so the file can be read or opened"
+    },
+    {
       "name": "create_note",
       "description": "Create a new note in Notes.app, optionally in a specific folder"
     },
     {
       "name": "append_to_note",
-      "description": "Append plain text to the end of an existing note"
+      "description": "Append plain text to the end of an existing note (refused for notes containing checklists, whose state Notes.app scripting cannot preserve)"
     },
     {
       "name": "update_note",
-      "description": "Replace an existing note's body with new text (overwrites; use append_to_note to add without replacing)"
+      "description": "Replace an existing note's body with new text (overwrites; refused for notes containing checklists, whose state Notes.app scripting cannot preserve)"
     },
     {
       "name": "create_folder",

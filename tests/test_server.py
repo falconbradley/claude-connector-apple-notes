@@ -17,8 +17,10 @@ EXPECTED_TOOLS = {
     "get_note",
     "get_note_link",
     "get_selected_notes",
+    "get_attachment",
     "get_stats",
     "list_folders",
+    "list_note_attachments",
     "move_note",
     "open_note_in_notes",
     "search_notes",
@@ -55,6 +57,14 @@ def test_write_tools_document_their_side_effects():
     tools = {t.name: t for t in _list_tools()}
     assert "OVERWRITES" in tools["update_note"].description
     assert "append_to_note" in tools["update_note"].description
+
+
+def test_write_tools_warn_about_checklists():
+    """The checklist refusal must be discoverable from the tool schema."""
+    tools = {t.name: t for t in _list_tools()}
+    for name in ("update_note", "append_to_note"):
+        assert "checklist" in tools[name].description.lower(), name
+        assert "force" in tools[name].input_schema["properties"], name
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="stdio launch is macOS-only")

@@ -39,6 +39,10 @@ class NoteDetail(NoteSummary):
     """Full note with extracted plain-text body."""
     body_text: Optional[str] = None
     body_unavailable_reason: Optional[str] = None  # e.g. "password-protected"
+    attachment_count: int = 0
+    # True when the note contains checkboxes. Their state exists only in
+    # the local store, so the write tools refuse to rewrite such a note.
+    has_checklist: bool = False
 
 
 class SearchResult(BaseModel):
@@ -49,6 +53,23 @@ class SearchResult(BaseModel):
     # Which engine served this search: "sqlite" (fast local-store path)
     # or "applescript" (JXA fallback).
     engine: Optional[str] = None
+
+
+class Attachment(BaseModel):
+    """A file, link, table, or drawing embedded in a note."""
+    id: int                             # NoteStore Z_PK
+    note_id: int
+    name: str                           # display name / filename
+    type_uti: Optional[str] = None      # e.g. "public.jpeg", "com.apple.notes.table"
+    kind: str = "file"                  # friendly bucket: image, pdf, link, table, ...
+    url: Optional[str] = None           # for link attachments (public.url)
+    file_path: Optional[str] = None     # absolute path when the file is on disk
+    size_bytes: Optional[int] = None
+    # True when a real file backs this attachment and is present on
+    # disk. Links, tables, drawings and scans have no media file at
+    # all, so this is False for them by design — not a pending download.
+    has_local_file: bool = False
+    created: Optional[datetime] = None
 
 
 class SelectionResult(BaseModel):

@@ -40,8 +40,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from .models import Folder, NoteDetail, NotesStats, NoteSummary, SearchResult
-from .protobuf import extract_note_text
+from .models import (
+    Attachment,
+    Folder,
+    NoteDetail,
+    NotesStats,
+    NoteSummary,
+    SearchResult,
+)
+from .protobuf import extract_note_text, has_checklist
 
 logger = logging.getLogger("apple_notes_mcp.notestore")
 
@@ -53,6 +60,45 @@ _STORE_PATH = (
 _CORE_DATA_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
 
 _TRASH_FOLDER_IDENTIFIERS = {"TrashFolder-CloudKit", "TrashFolder-Local"}
+
+# Attachment files live beside the store, one directory per account:
+#   Accounts/<account-uuid>/Media/<media-uuid>/<generation>/<filename>
+_MEDIA_ROOT = (
+    Path.home() / "Library" / "Group Containers" / "group.com.apple.notes"
+    / "Accounts"
+)
+
+# Friendly buckets for the UTIs Notes actually stores, so callers can
+# filter without knowing Apple's type identifiers.
+_UTI_KINDS = (
+    ("com.apple.notes.table", "table"),
+    ("com.apple.notes.gallery", "gallery"),
+    ("com.apple.drawing", "drawing"),
+    ("com.apple.paper.doc.scan", "scan"),
+    ("com.apple.paper", "scan"),
+    ("public.url", "link"),
+    ("public.vcard", "contact"),
+    ("com.adobe.pdf", "pdf"),
+    ("public.jpeg", "image"),
+    ("public.png", "image"),
+    ("public.tiff", "image"),
+    ("public.heic", "image"),
+    ("public.image", "image"),
+    ("public.movie", "video"),
+    ("public.audio", "audio"),
+)
+
+
+def _uti_kind(uti: Optional[str]) -> str:
+    """Map a UTI to a friendly kind; unknown types fall back to "file"."""
+    if not uti:
+        return "file"
+    for prefix, kind in _UTI_KINDS:
+        if uti == prefix or uti.startswith(prefix + "."):
+            return kind
+    if uti.startswith("public.") and "image" in uti:
+        return "image"
+    return "file"
 
 
 def _cd_date(value: Optional[float]) -> Optional[datetime]:
@@ -158,6 +204,33 @@ class NoteStore:
                 sorted(c for c in cols if re.fullmatch(r"ZACCOUNT\d*", c)),
                 ents["ICFolder"],
             )
+            # Attachments (ICAttachment) and their on-disk files (ICMedia)
+            # are optional: absent on very old schemas, so every attachment
+            # read degrades to "no attachments" rather than failing.
+            schema["ent_attachment"] = ents.get("ICAttachment")
+            schema["ent_media"] = ents.get("ICMedia")
+            if schema["ent_attachment"]:
+                ent_a = schema["ent_attachment"]
+                schema["att_title"] = self._pick_populated(
+                    con, ["ZTITLE", "ZTITLE1", "ZTITLE2"], ent_a
+                )
+                schema["att_uti"] = self._pick_populated(
+                    con, ["ZTYPEUTI", "ZTYPEUTI1"], ent_a
+                )
+                schema["att_url"] = self._pick_populated(
+                    con, ["ZURLSTRING", "ZREMOTEFILEURLSTRING"], ent_a
+                )
+                schema["att_note"] = self._pick_populated(
+                    con, sorted(c for c in cols if re.fullmatch(r"ZNOTE\d*", c)), ent_a
+                )
+                schema["att_media"] = self._pick_populated(
+                    con, sorted(c for c in cols if re.fullmatch(r"ZMEDIA\d*", c)), ent_a
+                )
+                schema["att_created"] = self._pick(
+                    cols, ["ZCREATIONDATE", "ZCREATIONDATE1"]
+                )
+                schema["att_filename"] = self._pick(cols, ["ZFILENAME"])
+                schema["att_identifier"] = "ZIDENTIFIER" if "ZIDENTIFIER" in cols else None
             self._schema = schema
             try:
                 row = con.execute("SELECT Z_UUID FROM Z_METADATA").fetchone()
@@ -403,6 +476,7 @@ class NoteStore:
             return None
         summary = self._row_to_summary(row, folders)
         detail = NoteDetail(**summary.model_dump())
+        detail.attachment_count = self.attachment_count(note_id)
         if detail.is_password_protected:
             detail.body_unavailable_reason = (
                 "password-protected — Notes encrypts locked note bodies"
@@ -414,6 +488,7 @@ class NoteStore:
         ).fetchone() if row["ZNOTEDATA"] is not None else None
         if blob_row and blob_row["ZDATA"]:
             detail.body_text = extract_note_text(blob_row["ZDATA"])
+            detail.has_checklist = has_checklist(blob_row["ZDATA"])
             if detail.body_text is None:
                 detail.body_unavailable_reason = "body could not be decoded"
         else:
@@ -452,6 +527,145 @@ class NoteStore:
             (s["ent_note"], identifier),
         ).fetchone()
         return row["Z_PK"] if row else None
+
+    # ------------------------------------------------------------------
+    # Attachments
+    # ------------------------------------------------------------------
+
+    def list_attachments(self, note_id: int) -> list[Attachment]:
+        """Every attachment on a note, with on-disk paths where available."""
+        con = self._connect()
+        s = self._sch()
+        if not s.get("ent_attachment") or not s.get("att_note"):
+            return []
+        rows = con.execute(
+            f"SELECT {self._attachment_columns()} FROM ZICCLOUDSYNCINGOBJECT a "
+            f"WHERE a.Z_ENT=? AND a.{s['att_note']}=?",
+            (s["ent_attachment"], note_id),
+        ).fetchall()
+        media = self._media_map(con, [r["media_pk"] for r in rows])
+        return [self._row_to_attachment(r, note_id, media) for r in rows]
+
+    def get_attachment(self, attachment_id: int) -> Optional[Attachment]:
+        con = self._connect()
+        s = self._sch()
+        if not s.get("ent_attachment"):
+            return None
+        row = con.execute(
+            f"SELECT {self._attachment_columns()} FROM ZICCLOUDSYNCINGOBJECT a "
+            f"WHERE a.Z_ENT=? AND a.Z_PK=?",
+            (s["ent_attachment"], attachment_id),
+        ).fetchone()
+        if row is None:
+            return None
+        media = self._media_map(con, [row["media_pk"]])
+        return self._row_to_attachment(row, row["note_pk"], media)
+
+    def attachment_count(self, note_id: int) -> int:
+        con = self._connect()
+        s = self._sch()
+        if not s.get("ent_attachment") or not s.get("att_note"):
+            return 0
+        row = con.execute(
+            f"SELECT COUNT(*) AS n FROM ZICCLOUDSYNCINGOBJECT "
+            f"WHERE Z_ENT=? AND {s['att_note']}=?",
+            (s["ent_attachment"], note_id),
+        ).fetchone()
+        return row["n"] if row else 0
+
+    def attachment_bytes(self, note_id: int) -> int:
+        """Total on-disk size of a note's attachments.
+
+        Used to predict how large the note's HTML body will be when
+        Notes.app inlines attachments as base64 for a rewrite.
+        """
+        return sum(a.size_bytes or 0 for a in self.list_attachments(note_id))
+
+    def note_has_checklist(self, note_id: int) -> bool:
+        """True if the note contains checkboxes (see protobuf.has_checklist)."""
+        con = self._connect()
+        s = self._sch()
+        row = con.execute(
+            "SELECT d.ZDATA FROM ZICCLOUDSYNCINGOBJECT n "
+            "JOIN ZICNOTEDATA d ON n.ZNOTEDATA = d.Z_PK "
+            "WHERE n.Z_ENT=? AND n.Z_PK=?",
+            (s["ent_note"], note_id),
+        ).fetchone()
+        if row is None or not row["ZDATA"]:
+            return False
+        return has_checklist(row["ZDATA"])
+
+    # ------------------------------------------------------------------
+    # Attachment internals
+    # ------------------------------------------------------------------
+
+    def _attachment_columns(self) -> str:
+        s = self._sch()
+        cols = ["a.Z_PK"]
+        cols.append(f"a.{s['att_note']} AS note_pk" if s.get("att_note") else "NULL AS note_pk")
+        cols.append(f"a.{s['att_media']} AS media_pk" if s.get("att_media") else "NULL AS media_pk")
+        cols.append(f"a.{s['att_title']} AS title" if s.get("att_title") else "NULL AS title")
+        cols.append(f"a.{s['att_uti']} AS uti" if s.get("att_uti") else "NULL AS uti")
+        cols.append(f"a.{s['att_url']} AS url" if s.get("att_url") else "NULL AS url")
+        cols.append(f"a.{s['att_created']} AS created" if s.get("att_created") else "NULL AS created")
+        return ", ".join(cols)
+
+    def _media_map(
+        self, con: sqlite3.Connection, media_pks: list[Any]
+    ) -> dict[int, dict[str, Any]]:
+        """Media Z_PK -> {identifier, filename} for the given rows."""
+        s = self._sch()
+        pks = [pk for pk in media_pks if pk is not None]
+        if not pks or not s.get("ent_media"):
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        ident = s.get("att_identifier") or "ZIDENTIFIER"
+        fname = s.get("att_filename") or "ZFILENAME"
+        for i in range(0, len(pks), 500):
+            chunk = pks[i:i + 500]
+            for row in con.execute(
+                f"SELECT Z_PK, {ident} AS ident, {fname} AS fname "
+                f"FROM ZICCLOUDSYNCINGOBJECT WHERE Z_ENT=? AND Z_PK IN ("
+                + ",".join("?" * len(chunk)) + ")",
+                (s["ent_media"], *chunk),
+            ):
+                out[row["Z_PK"]] = {"identifier": row["ident"], "filename": row["fname"]}
+        return out
+
+    def _row_to_attachment(
+        self, row: sqlite3.Row, note_id: int, media: dict[int, dict[str, Any]]
+    ) -> Attachment:
+        uti = row["uti"]
+        info = media.get(row["media_pk"]) if row["media_pk"] is not None else None
+        path = self._media_path(info) if info else None
+        name = row["title"] or (info or {}).get("filename") or "Untitled"
+        return Attachment(
+            id=row["Z_PK"],
+            note_id=note_id or 0,
+            name=name,
+            type_uti=uti,
+            kind=_uti_kind(uti),
+            url=row["url"],
+            file_path=str(path) if path else None,
+            size_bytes=path.stat().st_size if path else None,
+            has_local_file=path is not None,
+            created=_cd_date(row["created"]),
+        )
+
+    def _media_path(self, info: dict[str, Any]) -> Optional[Path]:
+        """Resolve a media row to its file.
+
+        Layout: Accounts/<account>/Media/<media-identifier>/<generation>/<file>
+        The generation directory changes when an attachment is edited, so
+        it is globbed rather than assumed.
+        """
+        ident, fname = info.get("identifier"), info.get("filename")
+        if not ident or not fname:
+            return None
+        for candidate in _MEDIA_ROOT.glob(f"*/Media/{ident}/*/{fname}"):
+            if candidate.is_file():
+                return candidate
+        return None
 
     # ------------------------------------------------------------------
     # Internals

@@ -19,9 +19,11 @@ Sibling project: [claude-connector-apple-mail](https://github.com/falconbradley/
 | `get_note_link` | An `applenotes://` deep link + a clickable http link for the note |
 | `open_note_in_notes` | Open a note directly in Notes.app (for chat UIs that block custom URL schemes) |
 | `get_selected_notes` | The notes you currently have selected in Notes.app, with bodies — for "this note" / "what I'm looking at" |
+| `list_note_attachments` | Everything embedded in a note: images, PDFs, scans, drawings, tables, links — with on-disk paths |
+| `get_attachment` | One attachment by id, including its file path on disk |
 | `create_note` | Create a new note (optionally in a specific folder) — synced natively by Notes.app |
 | `append_to_note` | Append plain text to an existing note |
-| `update_note` | Replace a note's body (overwrites — use `append_to_note` to add without replacing). Keeps the note's title unless you pass a new one |
+| `update_note` | Replace a note's body (overwrites — use `append_to_note` to add without replacing). Keeps the note's title unless you pass a new one. Refused on checklist notes |
 | `create_folder` | Create a new folder in any account |
 | `move_note` | Move a note into an existing folder |
 
@@ -58,6 +60,28 @@ When Full Disk Access is missing, reads transparently fall back to a **JXA (Java
 Writes — creating notes and folders, appending, rewriting a body, moving notes — always go through Notes.app scripting (Automation permission), so Notes.app owns every mutation and syncs it to iCloud itself. The note ids used by scripting (`x-coredata://…/ICNote/p<n>`) line up 1:1 with the fast path's ids, so the two engines compose cleanly.
 
 Notes derives a note's **title from the first line of its body**, which makes `update_note` subtler than it looks: replacing the body would rename the note to whatever the new first line is. So when you don't pass a `title`, the server reads the note's current title and re-emits it as the first line — the note keeps its name — and skips that if your new body already starts with the title, so it never ends up duplicated. Pass `title` explicitly to rename.
+
+### Attachments
+
+Attachments resolve entirely from the local store — no scripting, no Notes.app. Each note's attachments are rows in the same Core Data store, and the files themselves sit beside it:
+
+```
+Accounts/<account-uuid>/Media/<media-uuid>/<generation>/<filename>
+```
+
+The generation directory changes when an attachment is edited, so the server globs it rather than assuming it. `list_note_attachments` reports a friendly `kind` (image, pdf, link, table, scan, drawing, contact) alongside the raw UTI, and link attachments expose the target `url` directly.
+
+Attachments backed by a real file report `file_path`, `size_bytes`, and `has_local_file: true` — read or open that path directly; the server never copies or modifies it. Tables, links, and drawings have **no file by design** (their content lives in the store, not on disk), so `has_local_file` is false for them — that is not a pending iCloud download.
+
+### Checklists are read-only, and the write tools know it
+
+Notes stores checkbox state only in its own binary body format. Its AppleScript/JXA interface cannot represent it in **either** direction: reading a checklist note's `body` yields plain `<ul><li>` with no checked attribute, and writing `<ul class="checklist"><li checked>` back produces an ordinary bulleted list.
+
+So any body rewrite silently converts checkboxes to bullets and erases which items were done. Rather than let that happen, `append_to_note` and `update_note` detect checklists through the fast path and **refuse**, explaining why. This refusal cannot be overridden — edit such notes in Notes.app.
+
+`get_note` reports `has_checklist` so you can tell in advance.
+
+The same tools also refuse notes carrying very large attachments, since Notes.app inlines attachments as base64 when a body is rewritten (one note here produced an 11 MB body). That refusal *is* overridable with `force=true`, because it is a performance risk rather than data loss.
 
 ### Reading the current selection
 
@@ -130,6 +154,8 @@ Once installed, just ask Claude naturally:
 - *"Summarize the note I have open"* / *"What am I looking at?"*
 - *"Rewrite this note's body to clean up the formatting"*
 - *"Make a folder called Travel and move my Japan notes into it"*
+- *"What's attached to my Cannon Beach note?"* / *"Show me the PDF from that note"*
+- *"What links have I saved in my notes?"*
 - *"Open that note in Notes"*
 
 ---
@@ -198,11 +224,13 @@ No test touches Notes.app or needs Full Disk Access: the store tests build a syn
 - [x] Read the current Notes.app selection
 - [ ] ~~Pin / unpin~~ — **not possible.** Notes.app's scripting dictionary exposes no `pinned` property (verified against `sdef /System/Applications/Notes.app`), so the only route would be writing `ZISPINNED` directly into `NoteStore.sqlite`. That would break the read-only-store invariant and race Core Data and CloudKit sync, so this server won't do it.
 
-**Phase 3 — Rich content**
-- [ ] Checklists (read + toggle)
-- [ ] Attachments (list, retrieve)
-- [ ] Tables (read as markdown)
-- [ ] Hashtags and mentions
+**Phase 3 — Rich content (v0.3)**
+- [x] Attachments (list, retrieve, resolve to files on disk)
+- [x] Link attachments expose their target URL
+- [ ] Checklists — *read* is implemented internally (`has_checklist`); rendering item text and state in `get_note` is next
+- [ ] ~~Checklists (toggle)~~ — **not possible.** Notes' scripting interface cannot represent checkbox state in either direction (verified both ways), so the write tools refuse checklist notes instead
+- [ ] Tables (read as markdown) — stored as attachments with a gzipped CRDT payload in `ZMERGEABLEDATA1`; decodable but a project of its own
+- [ ] Hashtags and mentions — `ICHashtag` exists in the schema
 
 ---
 
@@ -210,7 +238,8 @@ No test touches Notes.app or needs Full Disk Access: the store tests build a syn
 
 - Read operations never modify your notes: the store is opened with `PRAGMA query_only` and URI `mode=ro` — the local store is never written to, by any code path.
 - Write operations go through Notes.app scripting only, and **nothing is ever deleted** — there is no delete tool, and no tool removes a note or a folder. One tool does overwrite: `update_note` replaces a note's body, and the previous body is not recoverable from this server (Notes.app's own version history still applies). Every other write is additive: `create_note`, `create_folder`, `append_to_note`, and `move_note` (which relocates a note without altering its content).
-- `update_note` refuses password-protected notes.
+- `update_note` refuses password-protected notes, and both write tools refuse notes containing checklists rather than destroy their state.
+- Attachment reads are read-only and never copy or move your files: the server reports the path a file already occupies inside Notes' own container.
 - Password-protected (locked) notes stay locked: their bodies are encrypted at rest and this server never attempts decryption — metadata only.
 - No data leaves your machine — this is a local MCP server. Notes.app keeps sole custody of account credentials (iCloud sign-in etc.).
 - The open-in-Notes link redirector binds to 127.0.0.1 only, requires a per-install random token on every request, and can only focus Notes.app on a note — it never serves note content.

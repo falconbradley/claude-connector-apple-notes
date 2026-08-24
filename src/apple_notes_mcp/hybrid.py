@@ -19,6 +19,7 @@ from typing import Optional
 
 from . import applescript
 from .models import (
+    Attachment,
     Folder,
     NoteDetail,
     NotesStats,
@@ -153,6 +154,32 @@ class HybridBridge:
         )
 
     # ------------------------------------------------------------------
+    # Attachments (fast path only)
+    #
+    # Notes.app scripting exposes attachment names but no file data, and
+    # the local store resolves both — so these have no JXA fallback and
+    # say so plainly rather than returning a misleading empty list.
+    # ------------------------------------------------------------------
+
+    def list_attachments(self, note_id: int) -> list[Attachment]:
+        fast = self._require_fast("Listing attachments")
+        return fast.list_attachments(note_id)
+
+    def get_attachment(self, attachment_id: int) -> Optional[Attachment]:
+        fast = self._require_fast("Reading an attachment")
+        return fast.get_attachment(attachment_id)
+
+    def _require_fast(self, what: str) -> NoteStore:
+        fast = self._fast()
+        if fast is None:
+            raise NoteStoreError(
+                f"{what} needs the fast local-store path, which is "
+                "unavailable — grant Full Disk Access to the launcher "
+                "binary (see the README) and try again."
+            )
+        return fast
+
+    # ------------------------------------------------------------------
     # Opening notes
     # ------------------------------------------------------------------
 
@@ -206,7 +233,12 @@ class HybridBridge:
             notes_link=self.notes_link(pk) if pk else None,
         )
 
-    def append_to_note(self, note_id: int, body_text: str) -> WriteResult:
+    def append_to_note(
+        self, note_id: int, body_text: str, force: bool = False
+    ) -> WriteResult:
+        refusal = self._write_refusal(note_id, force)
+        if refusal:
+            return WriteResult(success=False, id=note_id, detail=refusal)
         coredata_id = self._resolve_coredata_id(note_id)
         if not coredata_id:
             return WriteResult(
@@ -222,8 +254,12 @@ class HybridBridge:
         )
 
     def replace_note_body(
-        self, note_id: int, body_text: str, title: Optional[str] = None
+        self, note_id: int, body_text: str, title: Optional[str] = None,
+        force: bool = False,
     ) -> WriteResult:
+        refusal = self._write_refusal(note_id, force)
+        if refusal:
+            return WriteResult(success=False, id=note_id, detail=refusal)
         coredata_id = self._resolve_coredata_id(note_id)
         if not coredata_id:
             return WriteResult(
@@ -269,6 +305,51 @@ class HybridBridge:
             full_name=f"{acct}/{fname}" if acct else fname,
             note_count=0,
         )
+
+    # ------------------------------------------------------------------
+    # Write safety
+    #
+    # Both write paths hand Notes.app an HTML body. That representation
+    # cannot carry checklist state (verified both directions: Notes
+    # renders checkboxes as plain <ul><li>, and writing checklist markup
+    # back produces a plain list), so rewriting a note that contains
+    # checkboxes converts them to bullets and destroys every done-state.
+    # Refuse rather than silently lose data.
+    # ------------------------------------------------------------------
+
+    # Bodies round-trip through osascript's stdout as one JSON payload,
+    # and images ride along base64-encoded, so a photo-heavy note can be
+    # tens of megabytes. Past this, refuse unless the caller insists.
+    _LARGE_BODY_BYTES = 4 * 1024 * 1024
+
+    def _write_refusal(self, note_id: int, force: bool) -> Optional[str]:
+        """Why this note must not be rewritten, or None if it is safe."""
+        fast = self._fast()
+        if fast is None:
+            # Without the local store we cannot inspect the note, and the
+            # scripting body has already lost whatever it would tell us.
+            return None
+        try:
+            if fast.note_has_checklist(note_id):
+                return (
+                    "This note contains checklist items, and Notes.app's "
+                    "scripting interface cannot represent checkboxes — "
+                    "rewriting the body would turn them into plain bullets "
+                    "and lose which items are checked. Edit this note in "
+                    "Notes.app instead. (This cannot be overridden.)"
+                )
+            if not force:
+                size = fast.attachment_bytes(note_id)
+                if size > self._LARGE_BODY_BYTES:
+                    return (
+                        f"This note carries about {size / 1_048_576:.0f} MB of "
+                        "attachments, which Notes.app inlines as base64 when "
+                        "the body is rewritten — likely to be very slow or to "
+                        "time out. Pass force=true to attempt it anyway."
+                    )
+        except NoteStoreError:
+            return None
+        return None
 
     # ------------------------------------------------------------------
     # Selection (scripting-only; re-read through the fast path)

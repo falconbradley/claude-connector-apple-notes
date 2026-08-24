@@ -117,3 +117,39 @@ def extract_note_text(zdata: bytes) -> Optional[str]:
     return (
         decoded.replace("\ufffc", "\n[attachment]\n").replace("\u2028", "\n")
     )
+
+
+def _iter_paragraph_styles(note: bytes) -> Iterator[bytes]:
+    """Yield each attribute_run's paragraph_style payload (field 5 -> 2)."""
+    for field, wire, payload in iter_fields(note):
+        if field != 5 or wire != _LENGTH:      # attribute_run
+            continue
+        for f2, w2, p2 in iter_fields(payload):
+            if f2 == 2 and w2 == _LENGTH:      # paragraph_style
+                yield p2
+
+
+def has_checklist(zdata: bytes) -> bool:
+    """True if a note body contains checklist (checkbox) paragraphs.
+
+    Checklist state lives only here — Notes' AppleScript HTML body
+    renders checkboxes as plain <ul><li> with no checked attribute, and
+    writing checklist markup back produces a plain list. So a body
+    round-trip through scripting silently converts checkboxes to bullets
+    and loses every done-state; callers use this to refuse that write.
+    """
+    try:
+        raw = zlib.decompress(zdata, 47)
+        document = _first_length_field(raw, 2)
+        if document is None:
+            return False
+        note = _first_length_field(document, 3)
+        if note is None:
+            return False
+        for style in _iter_paragraph_styles(note):
+            for f3, w3, _ in iter_fields(style):
+                if f3 == 5 and w3 == _LENGTH:  # checklist submessage
+                    return True
+    except (zlib.error, ValueError):
+        return False
+    return False

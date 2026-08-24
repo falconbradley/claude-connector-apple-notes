@@ -26,6 +26,8 @@ Tools provided
   update_note          - Replace a note's body (overwrites)
   create_folder        - Create a new folder
   move_note            - Move a note to another folder
+  list_note_attachments- Images, PDFs, tables, links embedded in a note
+  get_attachment       - One attachment, including its path on disk
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from mcp.server.mcpserver import MCPServer
 
 from .hybrid import HybridBridge
 from .models import (
+    Attachment,
     Folder,
     NoteDetail,
     NoteLink,
@@ -226,6 +229,34 @@ def open_note_in_notes(note_id: int) -> str:
 
 
 @mcp.tool()
+def list_note_attachments(note_id: int) -> list[Attachment]:
+    """List everything embedded in a note: images, PDFs, scans, drawings,
+    tables, and links.
+
+    Each attachment reports a `kind` (image, pdf, link, table, scan,
+    drawing, contact, ...). Link attachments carry the target `url`.
+    Attachments backed by a real file report `file_path` and
+    `size_bytes` with `has_local_file` true — read that path directly to
+    view the file. Tables, links and drawings have no file by design.
+    """
+    return _require_bridge().list_attachments(note_id)
+
+
+@mcp.tool()
+def get_attachment(attachment_id: int) -> Attachment:
+    """Get one attachment by id, including its path on disk.
+
+    Use list_note_attachments to find ids. When `has_local_file` is
+    true, `file_path` points at the real file and can be read or opened
+    directly; the server never copies or modifies it.
+    """
+    attachment = _require_bridge().get_attachment(attachment_id)
+    if attachment is None:
+        raise ValueError(f"No attachment with id {attachment_id}")
+    return attachment
+
+
+@mcp.tool()
 def get_selected_notes(limit: int = 25) -> SelectionResult:
     """Get the notes currently selected in Notes.app, including bodies.
 
@@ -267,12 +298,19 @@ def create_note(
 
 
 @mcp.tool()
-def append_to_note(note_id: int, text: str) -> WriteResult:
+def append_to_note(note_id: int, text: str, force: bool = False) -> WriteResult:
     """Append plain text to the end of an existing note.
 
     Line breaks in text are preserved. The edit is performed by
-    Notes.app scripting, so it syncs natively."""
-    result = _require_bridge().append_to_note(note_id, text)
+    Notes.app scripting, so it syncs natively.
+
+    Refused for notes containing checklists: Notes.app's scripting
+    interface cannot represent checkboxes, so any rewrite would turn
+    them into plain bullets and lose which items are checked. Also
+    refused for notes with very large attachments, since those are
+    inlined as base64 and can time out — pass force=true for that case
+    only (it never overrides the checklist refusal)."""
+    result = _require_bridge().append_to_note(note_id, text, force=force)
     if result.success and result.id:
         result.open_link = _require_weblink().open_link(result.id)
     return result
@@ -283,6 +321,7 @@ def update_note(
     note_id: int,
     body: str,
     title: Optional[str] = None,
+    force: bool = False,
 ) -> WriteResult:
     """Replace an existing note's body with new text.
 
@@ -297,8 +336,13 @@ def update_note(
             title — Notes takes a note's title from the first line of
             its body, so the existing title is re-emitted as that line.
 
-    Password-protected notes are refused."""
-    result = _require_bridge().replace_note_body(note_id, body, title)
+    Password-protected notes are refused, as are notes containing
+    checklists (Notes.app's scripting interface cannot represent
+    checkboxes, so a rewrite would destroy their state) and notes with
+    very large attachments (pass force=true for the size case only)."""
+    result = _require_bridge().replace_note_body(
+        note_id, body, title, force=force
+    )
     if result.success and result.id:
         result.open_link = _require_weblink().open_link(result.id)
     return result
