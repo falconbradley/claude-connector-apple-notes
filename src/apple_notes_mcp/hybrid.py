@@ -26,6 +26,7 @@ from .models import (
     NoteSummary,
     SearchResult,
     SelectionResult,
+    Table,
     WriteResult,
 )
 from .notestore import NoteStore, NoteStoreError
@@ -168,6 +169,10 @@ class HybridBridge:
     def get_attachment(self, attachment_id: int) -> Optional[Attachment]:
         fast = self._require_fast("Reading an attachment")
         return fast.get_attachment(attachment_id)
+
+    def get_table(self, attachment_id: int) -> Optional[Table]:
+        fast = self._require_fast("Reading a table")
+        return fast.get_table(attachment_id)
 
     def _require_fast(self, what: str) -> NoteStore:
         fast = self._fast()

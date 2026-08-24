@@ -3,6 +3,46 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-08-24
+
+### Added
+
+- **Tables are decoded.** A table is not stored in the note body: the body
+  carries one U+FFFC placeholder, and the table lives in the attachment row's
+  `ZMERGEABLEDATA1` as a gzipped CRDT document. That format is now decoded
+  in-process (`tables.py`), so tables come back on the fast path with no
+  scripting and no Notes.app.
+- `read_table` returns a table as structured `rows` and as `markdown`.
+- `get_note` renders a note's tables inline as Markdown and returns them
+  structured in `tables`. Other placeholders now render as what they point at
+  — `[image: beach.jpeg]`, `[link: https://…]` — and dividers, hashtags and
+  mentions as their own text, replacing the previous generic `[attachment]`.
+  Across a real store of 199 notes, no placeholder falls back to the generic
+  label and all 24 tables decode.
+
+### Two details that produce plausible-but-wrong output
+
+- Row and column order needs an indirection: the ordered set lists *ordering*
+  UUIDs, not the identity UUIDs used as cell keys, and the ordering's contents
+  dictionary maps between them. Missing it decodes the correct shape with
+  every cell empty.
+- Attachments must be matched to placeholders by the identifiers in the note's
+  attribute runs, not by attachment row id. Sorting by primary key looks
+  correct and is not: in one real note, four of six tables decoded correctly
+  but landed in the wrong positions. Caught by cross-checking against Notes'
+  own HTML rendering, which is also how every decoded table was verified
+  cell-for-cell.
+
+### Fixed
+
+- Attachment reads no longer fail outright on a schema missing any of the
+  attachment columns; each degrades to empty rather than breaking `get_note`.
+
+### Not implemented
+
+- Writing tables would mean synthesising a CRDT document, and is not
+  attempted. Tables remain read-only, like checklists.
+
 ## [0.4.0] — 2026-08-24
 
 ### Added
@@ -128,6 +168,7 @@ and full body text, note bodies), clickable open-in-Notes links, a JXA fallback
 for when Full Disk Access is unavailable, and native-scripting writes
 (`create_note`, `append_to_note`).
 
+[0.5.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.5.0
 [0.4.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.4.0
 [0.3.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.3.0
 [0.2.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.2.0

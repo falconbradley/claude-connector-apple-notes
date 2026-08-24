@@ -23,6 +23,7 @@ EXPECTED_TOOLS = {
     "list_note_attachments",
     "move_note",
     "open_note_in_notes",
+    "read_table",
     "search_notes",
     "update_note",
 }

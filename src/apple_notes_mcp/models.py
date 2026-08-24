@@ -40,6 +40,9 @@ class NoteDetail(NoteSummary):
     body_text: Optional[str] = None
     body_unavailable_reason: Optional[str] = None  # e.g. "password-protected"
     attachment_count: int = 0
+    # Tables embedded in this note, decoded and in document order. Their
+    # content is also rendered inline in body_text.
+    tables: list[Table] = []
     # True when the note contains checkboxes. Their state exists only in
     # the local store, so the write tools refuse to rewrite such a note.
     has_checklist: bool = False
@@ -70,6 +73,17 @@ class Attachment(BaseModel):
     # all, so this is False for them by design — not a pending download.
     has_local_file: bool = False
     created: Optional[datetime] = None
+
+
+class Table(BaseModel):
+    """A table embedded in a note, decoded from its CRDT payload."""
+    attachment_id: int
+    note_id: int
+    row_count: int
+    column_count: int
+    rows: list[list[str]]
+    # The same content as Markdown, for dropping straight into a reply.
+    markdown: str
 
 
 class SelectionResult(BaseModel):

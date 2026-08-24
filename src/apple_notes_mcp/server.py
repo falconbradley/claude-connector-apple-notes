@@ -28,6 +28,7 @@ Tools provided
   move_note            - Move a note to another folder
   list_note_attachments- Images, PDFs, tables, links embedded in a note
   get_attachment       - One attachment, including its path on disk
+  read_table           - A table embedded in a note, as rows + Markdown
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ from .models import (
     NotesStats,
     SearchResult,
     SelectionResult,
+    Table,
     WriteResult,
 )
 from .weblink import WebLinkServer
@@ -208,8 +210,10 @@ def search_notes(
 def get_note(note_id: int) -> NoteDetail:
     """Read a full note: metadata plus extracted plain-text body.
 
-    Password-protected notes return metadata only (their bodies are
-    encrypted by Notes)."""
+    Embedded attachments are rendered in place: tables appear inline as
+    Markdown (and also come back structured in `tables`), links as their
+    URL, and files as [kind: name]. Password-protected notes return
+    metadata only (their bodies are encrypted by Notes)."""
     detail = _require_bridge().get_note(note_id)
     if detail is None:
         raise ValueError(f"No note with id {note_id}")
@@ -269,6 +273,23 @@ def get_attachment(attachment_id: int) -> Attachment:
     if attachment is None:
         raise ValueError(f"No attachment with id {attachment_id}")
     return attachment
+
+
+@mcp.tool()
+def read_table(attachment_id: int) -> Table:
+    """Read a table embedded in a note, as rows and as Markdown.
+
+    Find table ids with list_note_attachments (kind "table"). get_note
+    already renders a note's tables inline in its body text, so reach
+    for this when you want the cells as structured data.
+    """
+    table = _require_bridge().get_table(attachment_id)
+    if table is None:
+        raise ValueError(
+            f"Attachment {attachment_id} is not a table, or its contents "
+            "could not be decoded."
+        )
+    return table
 
 
 @mcp.tool()

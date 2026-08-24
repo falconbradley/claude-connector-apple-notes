@@ -21,6 +21,7 @@ Sibling project: [claude-connector-apple-mail](https://github.com/falconbradley/
 | `get_selected_notes` | The notes you currently have selected in Notes.app, with bodies — for "this note" / "what I'm looking at" |
 | `list_note_attachments` | Everything embedded in a note: images, PDFs, scans, drawings, tables, links — with on-disk paths |
 | `get_attachment` | One attachment by id, including its file path on disk |
+| `read_table` | A table embedded in a note, as structured rows and as Markdown |
 | `create_note` | Create a new note (optionally in a specific folder) — synced natively by Notes.app. Supports Markdown rich text |
 | `append_to_note` | Append plain text to an existing note |
 | `update_note` | Replace a note's body (overwrites — use `append_to_note` to add without replacing). Keeps the note's title unless you pass a new one. Refused on checklist notes |
@@ -102,6 +103,25 @@ Accounts/<account-uuid>/Media/<media-uuid>/<generation>/<filename>
 The generation directory changes when an attachment is edited, so the server globs it rather than assuming it. `list_note_attachments` reports a friendly `kind` (image, pdf, link, table, scan, drawing, contact) alongside the raw UTI, and link attachments expose the target `url` directly.
 
 Attachments backed by a real file report `file_path`, `size_bytes`, and `has_local_file: true` — read or open that path directly; the server never copies or modifies it. Tables, links, and drawings have **no file by design** (their content lives in the store, not on disk), so `has_local_file` is false for them — that is not a pending iCloud download.
+
+### Tables
+
+Notes does not keep a table in the note body. The body carries a single U+FFFC placeholder, and the table itself lives in the attachment row's `ZMERGEABLEDATA1` as a gzipped **CRDT document** — the structure Notes uses so two devices can edit the same table and merge the result.
+
+That structure is decoded in-process (`tables.py`), so tables come back on the fast path with no scripting and no Notes.app:
+
+- `read_table` returns a table as structured `rows` and as `markdown`
+- `get_note` renders a note's tables **inline as Markdown**, and also returns them structured in `tables`
+
+Two details are worth recording, because getting either wrong yields output that looks plausible and is wrong:
+
+**Row and column order needs an indirection.** The ordered set that gives row order lists *ordering* UUIDs, not the identity UUIDs used as cell keys. The ordering's own contents dictionary maps one to the other. Miss it and every cell lookup misses — the table decodes as the right shape, entirely empty.
+
+**Attachment order is document order, not row-id order.** Attachments must be matched to their placeholders through the identifiers in the note's attribute runs. Sorting by the attachment table's primary key looks right and is wrong: a note edited over time has tables whose row ids do not follow the order they appear in. This was caught by cross-checking decoded tables against Notes' own HTML rendering, where four of six tables in one note came back correctly decoded but attributed to the wrong position.
+
+Verified against every table in a real store — all 24 decode, and each was compared cell-for-cell against Notes' own rendering.
+
+Placeholders for everything else render as what they point at: `[image: beach.jpeg]`, `[link: https://…]`, and dividers, hashtags and mentions as their own text.
 
 ### Checklists are read-only, and the write tools know it
 
@@ -187,6 +207,7 @@ Once installed, just ask Claude naturally:
 - *"Make a folder called Travel and move my Japan notes into it"*
 - *"What's attached to my Cannon Beach note?"* / *"Show me the PDF from that note"*
 - *"What links have I saved in my notes?"*
+- *"Pull the cost table out of my remodel note"*
 - *"Open that note in Notes"*
 
 ---
@@ -224,6 +245,7 @@ claude-connector-apple-notes/
 │       ├── weblink.py         # Localhost open-in-Notes redirector
 │       ├── selftest.py        # Fast-path verification
 │       ├── richtext.py        # Markdown -> the HTML subset Notes honours
+│       ├── tables.py          # CRDT table decoder
 │       └── models.py          # Pydantic data models
 ├── tests/                     # Unit tests (synthetic store fixture, mocked JXA)
 └── .github/workflows/         # CI (tests + manifest checks) and release
@@ -262,7 +284,8 @@ No test touches Notes.app or needs Full Disk Access: the store tests build a syn
 - [x] Link attachments expose their target URL
 - [ ] Checklists — *read* is implemented internally (`has_checklist`); rendering item text and state in `get_note` is next
 - [ ] ~~Checklists (toggle)~~ — **not possible.** Notes' scripting interface cannot represent checkbox state in either direction (verified both ways), so the write tools refuse checklist notes instead
-- [ ] Tables (read as markdown) — stored as attachments with a gzipped CRDT payload in `ZMERGEABLEDATA1`; decodable but a project of its own
+- [x] Tables (read as Markdown) — decoded from the gzipped CRDT payload in `ZMERGEABLEDATA1` (v0.5)
+- [ ] Tables (write) — would mean synthesising a CRDT document; not attempted
 - [ ] Hashtags and mentions — `ICHashtag` exists in the schema
 
 ---

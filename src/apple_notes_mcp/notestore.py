@@ -47,8 +47,10 @@ from .models import (
     NotesStats,
     NoteSummary,
     SearchResult,
+    Table,
 )
-from .protobuf import extract_note_text, has_checklist
+from .protobuf import extract_attachment_refs, extract_note_text, has_checklist
+from .tables import decode_table, table_to_markdown
 
 logger = logging.getLogger("apple_notes_mcp.notestore")
 
@@ -209,6 +211,10 @@ class NoteStore:
             # read degrades to "no attachments" rather than failing.
             schema["ent_attachment"] = ents.get("ICAttachment")
             schema["ent_media"] = ents.get("ICMedia")
+            # Dividers, hashtags and mentions are inline attachments and
+            # carry their own display text.
+            schema["ent_inline"] = ents.get("ICInlineAttachment")
+            schema["inline_alt"] = "ZALTTEXT" if "ZALTTEXT" in cols else None
             if schema["ent_attachment"]:
                 ent_a = schema["ent_attachment"]
                 schema["att_title"] = self._pick_populated(
@@ -231,6 +237,10 @@ class NoteStore:
                 )
                 schema["att_filename"] = self._pick(cols, ["ZFILENAME"])
                 schema["att_identifier"] = "ZIDENTIFIER" if "ZIDENTIFIER" in cols else None
+                # Tables live here as a gzipped CRDT document.
+                schema["att_mergeable"] = self._pick(
+                    cols, ["ZMERGEABLEDATA1", "ZMERGEABLEDATA", "ZMERGEABLEDATA2"]
+                )
             self._schema = schema
             try:
                 row = con.execute("SELECT Z_UUID FROM Z_METADATA").fetchone()
@@ -487,8 +497,18 @@ class NoteStore:
             (row["ZNOTEDATA"],),
         ).fetchone() if row["ZNOTEDATA"] is not None else None
         if blob_row and blob_row["ZDATA"]:
-            detail.body_text = extract_note_text(blob_row["ZDATA"])
-            detail.has_checklist = has_checklist(blob_row["ZDATA"])
+            zdata = blob_row["ZDATA"]
+            # Keep the raw placeholders so each one can be replaced with
+            # the attachment it actually refers to, in document order.
+            body = extract_note_text(zdata, attachment_placeholder="\ufffc")
+            detail.has_checklist = has_checklist(zdata)
+            if body is not None:
+                refs = extract_attachment_refs(zdata)
+                detail.tables, renderings = self._note_tables(note_id, refs)
+                for rendering in renderings:
+                    body = body.replace("\ufffc", rendering, 1)
+                body = body.replace("\ufffc", "[attachment]")
+            detail.body_text = body
             if detail.body_text is None:
                 detail.body_unavailable_reason = "body could not be decoded"
         else:
@@ -594,6 +614,122 @@ class NoteStore:
         if row is None or not row["ZDATA"]:
             return False
         return has_checklist(row["ZDATA"])
+
+    def get_table(self, attachment_id: int) -> Optional[Table]:
+        """Decode one table attachment, or None if it is not a table."""
+        con = self._connect()
+        s = self._sch()
+        if not s.get("ent_attachment") or not s.get("att_mergeable"):
+            return None
+        row = con.execute(
+            f"SELECT Z_PK, {s['att_note']} AS note_pk, "
+            f"{s['att_mergeable']} AS blob "
+            f"FROM ZICCLOUDSYNCINGOBJECT WHERE Z_ENT=? AND Z_PK=?",
+            (s["ent_attachment"], attachment_id),
+        ).fetchone()
+        if row is None or not row["blob"]:
+            return None
+        rows = decode_table(row["blob"])
+        if rows is None:
+            return None
+        return Table(
+            attachment_id=row["Z_PK"],
+            note_id=row["note_pk"] or 0,
+            row_count=len(rows),
+            column_count=max((len(r) for r in rows), default=0),
+            rows=rows,
+            markdown=table_to_markdown(rows),
+        )
+
+    def _note_tables(
+        self, note_id: int, refs: list[tuple[str, Optional[str]]]
+    ) -> tuple[list[Table], list[str]]:
+        """Decode a note's attachments in document order.
+
+        Returns the tables plus one rendering per placeholder, so the
+        caller can substitute them back into the body text positionally.
+        """
+        con = self._connect()
+        s = self._sch()
+        by_identifier: dict[str, sqlite3.Row] = {}
+        if s.get("ent_attachment") and s.get("att_note"):
+            # Any of these columns may be absent on an older schema, so
+            # each degrades to NULL rather than breaking the whole read.
+            def column(key: str, alias: str) -> str:
+                return f"{s[key]} AS {alias}" if s.get(key) else f"NULL AS {alias}"
+
+            select = ", ".join(
+                ["Z_PK", "ZIDENTIFIER",
+                 column("att_uti", "uti"), column("att_title", "title"),
+                 column("att_url", "url"), column("att_mergeable", "blob")]
+            )
+            for row in con.execute(
+                f"SELECT {select} FROM ZICCLOUDSYNCINGOBJECT "
+                f"WHERE Z_ENT=? AND {s['att_note']}=?",
+                (s["ent_attachment"], note_id),
+            ):
+                if row["ZIDENTIFIER"]:
+                    by_identifier[row["ZIDENTIFIER"]] = row
+
+        inline = self._inline_attachments(
+            con, [i for i, _u in refs if i not in by_identifier]
+        )
+
+        tables: list[Table] = []
+        renderings: list[str] = []
+        for identifier, uti in refs:
+            row = by_identifier.get(identifier)
+            if row is None:
+                # Dividers, hashtags and mentions render as their own
+                # display text ("---", "#tag", "@name").
+                alt = inline.get(identifier)
+                renderings.append(alt if alt else "[attachment]")
+                continue
+            kind = _uti_kind(row["uti"] or uti)
+            if kind == "table" and row["blob"]:
+                decoded = decode_table(row["blob"])
+                if decoded is not None:
+                    markdown = table_to_markdown(decoded)
+                    tables.append(
+                        Table(
+                            attachment_id=row["Z_PK"],
+                            note_id=note_id,
+                            row_count=len(decoded),
+                            column_count=max((len(r) for r in decoded), default=0),
+                            rows=decoded,
+                            markdown=markdown,
+                        )
+                    )
+                    renderings.append(f"\n{markdown}\n")
+                    continue
+            name = row["title"] or ""
+            if kind == "link" and row["url"]:
+                renderings.append(f"[link: {row['url']}]")
+            elif name:
+                renderings.append(f"[{kind}: {name}]")
+            else:
+                renderings.append(f"[{kind}]")
+        return tables, renderings
+
+    def _inline_attachments(
+        self, con: sqlite3.Connection, identifiers: list[str]
+    ) -> dict[str, str]:
+        """Display text for inline attachments, keyed by identifier."""
+        s = self._sch()
+        if not identifiers or not s.get("ent_inline") or not s.get("inline_alt"):
+            return {}
+        out: dict[str, str] = {}
+        for i in range(0, len(identifiers), 500):
+            chunk = identifiers[i:i + 500]
+            for row in con.execute(
+                f"SELECT ZIDENTIFIER, {s['inline_alt']} AS alt "
+                f"FROM ZICCLOUDSYNCINGOBJECT WHERE Z_ENT=? AND ZIDENTIFIER IN ("
+                + ",".join("?" * len(chunk)) + ")",
+                (s["ent_inline"], *chunk),
+            ):
+                if row["ZIDENTIFIER"] and row["alt"]:
+                    out[row["ZIDENTIFIER"]] = row["alt"]
+        return out
 
     # ------------------------------------------------------------------
     # Attachment internals

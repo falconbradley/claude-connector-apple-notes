@@ -30,13 +30,25 @@ def _vf(field: int, value: int) -> bytes:
     return _varint((field << 3) | 0) + _varint(value)
 
 
-def _blob(text: str, *, checklist_done: bool | None = None) -> bytes:
-    """A note blob, optionally carrying one checklist attribute run."""
+def _blob(
+    text: str,
+    *,
+    checklist_done: bool | None = None,
+    attachments: list[tuple[str, str]] | None = None,
+) -> bytes:
+    """A note blob, optionally with a checklist run and attachment refs.
+
+    Each (identifier, uti) pair becomes an attribute run carrying
+    attachment_info, matching one U+FFFC placeholder in the text.
+    """
     note = _lf(2, text.encode())
     if checklist_done is not None:
         checklist = _lf(1, b"uuid") + _vf(2, 1 if checklist_done else 0)
         paragraph = _vf(1, 103) + _lf(5, checklist)      # style 103 = checkbox
         note += _lf(5, _vf(1, len(text)) + _lf(2, paragraph))
+    for identifier, uti in attachments or []:
+        info = _lf(1, identifier.encode()) + _lf(2, uti.encode())
+        note += _lf(5, _vf(1, 1) + _lf(12, info))
     return gzip.compress(_lf(2, _lf(3, note)))
 
 
@@ -77,8 +89,8 @@ def store(tmp_path):
         INSERT INTO ZICCLOUDSYNCINGOBJECT (Z_PK,Z_ENT,ZIDENTIFIER,ZFILENAME)
             VALUES (30,11,'MEDIA-UUID','beach.jpeg');
         INSERT INTO ZICCLOUDSYNCINGOBJECT
-            (Z_PK,Z_ENT,ZTITLE,ZTYPEUTI,ZNOTE,ZMEDIA,ZCREATIONDATE)
-            VALUES (20,5,'beach.jpeg','public.jpeg',10,30,1.0);
+            (Z_PK,Z_ENT,ZTITLE,ZTYPEUTI,ZNOTE,ZMEDIA,ZCREATIONDATE,ZIDENTIFIER)
+            VALUES (20,5,'beach.jpeg','public.jpeg',10,30,1.0,'ATT-IMG');
         INSERT INTO ZICCLOUDSYNCINGOBJECT
             (Z_PK,Z_ENT,ZTITLE,ZTYPEUTI,ZNOTE,ZURLSTRING,ZCREATIONDATE)
             VALUES (21,5,'Recipe','public.url',10,'https://example.com/r',2.0);
@@ -87,7 +99,11 @@ def store(tmp_path):
             VALUES (22,5,'Table','com.apple.notes.table',10,3.0);
         """
     )
-    con.execute("INSERT INTO ZICNOTEDATA VALUES (100, ?)", (_blob("Trip photos\nsunset"),))
+    con.execute(
+        "INSERT INTO ZICNOTEDATA VALUES (100, ?)",
+        (_blob("Trip photos\n\ufffc\nsunset",
+               attachments=[("ATT-IMG", "public.jpeg")]),),
+    )
     con.execute(
         "INSERT INTO ZICNOTEDATA VALUES (101, ?)",
         (_blob("Packing list\nsocks", checklist_done=False),),
@@ -270,3 +286,41 @@ def test_large_attachment_note_is_refused_then_forcible(bridge, monkeypatch):
     blocked = bridge.append_to_note(10, "more")
     assert blocked.success is False and "MB" in blocked.detail
     assert bridge.append_to_note(10, "more", force=True).success is True
+
+
+# ---------------------------------------------------------------------------
+# Schema degradation
+#
+# The fixture store has no ZMERGEABLEDATA1 column, which is what an older
+# macOS schema looks like. Reading a note must still work.
+# ---------------------------------------------------------------------------
+
+
+def test_notes_read_fine_on_a_schema_without_the_table_column(patched_store):
+    assert patched_store._sch().get("att_mergeable") is None
+    detail = patched_store.get_note(10)
+    assert detail.attachment_count == 3
+    assert detail.tables == []
+
+
+def test_attachments_still_listed_without_the_table_column(patched_store):
+    kinds = [a.kind for a in patched_store.list_attachments(10)]
+    assert kinds == ["image", "link", "table"]
+
+
+def test_get_table_returns_none_without_the_column(patched_store):
+    assert patched_store.get_table(22) is None
+
+
+def test_non_table_attachments_render_by_kind_in_body(patched_store):
+    """A placeholder becomes a description of what it points at."""
+    body = patched_store.get_note(10).body_text or ""
+    assert "[image: beach.jpeg]" in body
+    assert "\ufffc" not in body
+    assert "[attachment]" not in body
+
+
+def test_unknown_placeholder_falls_back_to_a_generic_label(patched_store):
+    """A ref with no matching attachment row still renders something."""
+    detail = patched_store.get_note(11)
+    assert "\ufffc" not in (detail.body_text or "")

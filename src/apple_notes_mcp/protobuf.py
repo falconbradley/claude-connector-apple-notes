@@ -89,7 +89,9 @@ def _first_length_field(buf: bytes, field_number: int) -> Optional[bytes]:
     return None
 
 
-def extract_note_text(zdata: bytes) -> Optional[str]:
+def extract_note_text(
+    zdata: bytes, attachment_placeholder: str = "\n[attachment]\n"
+) -> Optional[str]:
     """Extract plain text from a raw ZICNOTEDATA.ZDATA blob.
 
     Returns None if the blob cannot be decoded (e.g. encrypted note —
@@ -115,7 +117,8 @@ def extract_note_text(zdata: bytes) -> Optional[str]:
     # U+FFFC marks embedded objects (tables, images, drawings, scans);
     # U+2028 is the line separator Notes uses inside paragraphs.
     return (
-        decoded.replace("\ufffc", "\n[attachment]\n").replace("\u2028", "\n")
+        decoded.replace("\ufffc", attachment_placeholder)
+        .replace("\u2028", "\n")
     )
 
 
@@ -153,3 +156,39 @@ def has_checklist(zdata: bytes) -> bool:
     except (zlib.error, ValueError):
         return False
     return False
+
+
+def extract_attachment_refs(zdata: bytes) -> list[Tuple[str, Optional[str]]]:
+    """Embedded attachments in document order, as (identifier, type_uti).
+
+    Each entry corresponds, in order, to one U+FFFC placeholder in the
+    note text — verified 1:1 across every note in a real store. Ordering
+    has to come from here rather than from the attachment table's row
+    ids, which do not follow document order once a note has been edited.
+    """
+    refs: list[Tuple[str, Optional[str]]] = []
+    try:
+        raw = zlib.decompress(zdata, 47)
+        document = _first_length_field(raw, 2)
+        if document is None:
+            return refs
+        note = _first_length_field(document, 3)
+        if note is None:
+            return refs
+        for field, wire, payload in iter_fields(note):
+            if field != 5 or wire != _LENGTH:      # attribute_run
+                continue
+            for f2, w2, p2 in iter_fields(payload):
+                if f2 != 12 or w2 != _LENGTH:      # attachment_info
+                    continue
+                identifier = uti = None
+                for f3, w3, p3 in iter_fields(p2):
+                    if f3 == 1 and w3 == _LENGTH:
+                        identifier = p3.decode("utf-8", "replace")
+                    elif f3 == 2 and w3 == _LENGTH:
+                        uti = p3.decode("utf-8", "replace")
+                if identifier:
+                    refs.append((identifier, uti))
+    except (zlib.error, ValueError):
+        return refs
+    return refs
