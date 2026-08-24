@@ -19,6 +19,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   of what the tool description promised. The current title is now preserved
   when `title` is omitted (and not duplicated when the new body already opens
   with it). Found by the live smoke test, not the unit tests.
+- Unit tests can no longer reach real Notes.app scripting. An unmocked call
+  quietly succeeded against the live app locally while hanging for the full
+  120s timeout on CI; `tests/conftest.py` now fails such calls immediately.
 - `uv.lock` is now committed rather than gitignored. It is packed into the
   `.mcpb`, so it determines what the shipped server runs against; leaving it
   untracked is what let the break above ship unnoticed.

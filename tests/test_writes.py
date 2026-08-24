@@ -74,6 +74,13 @@ def test_replace_body_propagates_password_protection(bridge, monkeypatch):
     def fake(*a, **k):
         raise applescript.NotesScriptError("note is password-protected")
 
+    # replace_note_body reads the current title first, so this needs a
+    # mock too — otherwise the call escapes to real Notes.app scripting.
+    monkeypatch.setattr(
+        applescript, "get_note_body",
+        lambda cid: {"title": "Locked", "plaintext": "",
+                     "password_protected": True},
+    )
     monkeypatch.setattr(applescript, "replace_note_body", fake)
     with pytest.raises(applescript.NotesScriptError, match="password-protected"):
         bridge.replace_note_body(13, "x")
