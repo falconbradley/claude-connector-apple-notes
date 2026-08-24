@@ -221,9 +221,10 @@ class HybridBridge:
     # ------------------------------------------------------------------
 
     def create_note(
-        self, title: str, body_text: str, folder: Optional[str] = None
+        self, title: str, body_text: str, folder: Optional[str] = None,
+        markdown: bool = False,
     ) -> WriteResult:
-        raw = applescript.create_note(title, body_text, folder)
+        raw = applescript.create_note(title, body_text, folder, markdown=markdown)
         pk = self._pk_from_coredata_id(raw.get("id", ""))
         return WriteResult(
             success=True,
@@ -234,7 +235,8 @@ class HybridBridge:
         )
 
     def append_to_note(
-        self, note_id: int, body_text: str, force: bool = False
+        self, note_id: int, body_text: str, force: bool = False,
+        markdown: bool = False,
     ) -> WriteResult:
         refusal = self._write_refusal(note_id, force)
         if refusal:
@@ -245,7 +247,7 @@ class HybridBridge:
                 success=False, id=note_id,
                 detail=f"Could not resolve note id {note_id}",
             )
-        raw = applescript.append_to_note(coredata_id, body_text)
+        raw = applescript.append_to_note(coredata_id, body_text, markdown=markdown)
         return WriteResult(
             success=True,
             id=note_id,
@@ -255,7 +257,7 @@ class HybridBridge:
 
     def replace_note_body(
         self, note_id: int, body_text: str, title: Optional[str] = None,
-        force: bool = False,
+        force: bool = False, markdown: bool = False,
     ) -> WriteResult:
         refusal = self._write_refusal(note_id, force)
         if refusal:
@@ -271,7 +273,9 @@ class HybridBridge:
             # body, so replacing the body without re-emitting the title
             # would silently rename the note to the new first line.
             title = self._title_to_preserve(note_id, body_text)
-        raw = applescript.replace_note_body(coredata_id, body_text, title)
+        raw = applescript.replace_note_body(
+            coredata_id, body_text, title, markdown=markdown
+        )
         return WriteResult(
             success=True,
             id=note_id,

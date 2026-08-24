@@ -22,11 +22,12 @@ with JSON.parse inside the script — no string escaping games.
 
 from __future__ import annotations
 
-import html
 import json
 import logging
 import subprocess
 from typing import Any, Optional
+
+from .richtext import markdown_to_notes_html, plain_to_notes_html
 
 logger = logging.getLogger("apple_notes_mcp.applescript")
 
@@ -93,19 +94,18 @@ function findFolder(notes, name) {
 """
 
 
-def text_to_note_html(title: Optional[str], body_text: str) -> str:
-    """Convert plain text to the HTML Notes.app expects for a body.
+def text_to_note_html(
+    title: Optional[str], body_text: str, markdown: bool = False
+) -> str:
+    """Convert text to the HTML Notes.app expects for a body.
 
     The first <div> becomes the note title in Notes' UI, so when a title
-    is given we emit it as a leading heading div.
+    is given we emit it as a leading heading div. With markdown=True the
+    body is rendered as rich text; see richtext for what Notes honours.
     """
-    lines = body_text.split("\n")
-    parts = []
-    if title:
-        parts.append(f"<div><h1>{html.escape(title)}</h1></div>")
-    for line in lines:
-        parts.append(f"<div>{html.escape(line) or '<br>'}</div>")
-    return "".join(parts)
+    if markdown:
+        return markdown_to_notes_html(body_text, title)
+    return plain_to_notes_html(body_text, title)
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +113,8 @@ def text_to_note_html(title: Optional[str], body_text: str) -> str:
 # ---------------------------------------------------------------------------
 
 def create_note(
-    title: str, body_text: str, folder: Optional[str] = None
+    title: str, body_text: str, folder: Optional[str] = None,
+    markdown: bool = False,
 ) -> dict[str, Any]:
     """Create a note; returns {id, identifier_hint, folder}."""
     script = _COMMON + """
@@ -135,14 +136,17 @@ function run(argv) {
 }
 """
     result = _run_jxa(
-        script, {"html": text_to_note_html(title, body_text), "folder": folder}
+        script,
+        {"html": text_to_note_html(title, body_text, markdown), "folder": folder},
     )
     if isinstance(result, dict) and result.get("error"):
         raise NotesScriptError(result["error"])
     return result
 
 
-def append_to_note(coredata_id: str, body_text: str) -> dict[str, Any]:
+def append_to_note(
+    coredata_id: str, body_text: str, markdown: bool = False
+) -> dict[str, Any]:
     """Append plain text (as HTML divs) to an existing note's body."""
     script = _COMMON + """
 function run(argv) {
@@ -156,7 +160,8 @@ function run(argv) {
 }
 """
     result = _run_jxa(
-        script, {"id": coredata_id, "html": text_to_note_html(None, body_text)}
+        script,
+        {"id": coredata_id, "html": text_to_note_html(None, body_text, markdown)},
     )
     if isinstance(result, dict) and result.get("error"):
         raise NotesScriptError(result["error"])
@@ -164,7 +169,8 @@ function run(argv) {
 
 
 def replace_note_body(
-    coredata_id: str, body_text: str, title: Optional[str] = None
+    coredata_id: str, body_text: str, title: Optional[str] = None,
+    markdown: bool = False,
 ) -> dict[str, Any]:
     """Overwrite an existing note's body.
 
@@ -190,7 +196,7 @@ function run(argv) {
 """
     result = _run_jxa(
         script,
-        {"id": coredata_id, "html": text_to_note_html(title, body_text)},
+        {"id": coredata_id, "html": text_to_note_html(title, body_text, markdown)},
     )
     if isinstance(result, dict) and result.get("error"):
         raise NotesScriptError(result["error"])

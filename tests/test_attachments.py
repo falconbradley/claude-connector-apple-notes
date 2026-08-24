@@ -255,7 +255,8 @@ def test_checklist_refusal_cannot_be_forced(bridge, monkeypatch):
 
 def test_ordinary_notes_still_write(bridge, monkeypatch):
     monkeypatch.setattr(
-        applescript, "append_to_note", lambda cid, text: {"name": "Trip photos"}
+        applescript, "append_to_note",
+        lambda cid, text, markdown=False: {"name": "Trip photos"},
     )
     assert bridge.append_to_note(10, "more").success is True
 
@@ -263,7 +264,8 @@ def test_ordinary_notes_still_write(bridge, monkeypatch):
 def test_large_attachment_note_is_refused_then_forcible(bridge, monkeypatch):
     monkeypatch.setattr(bridge._store, "attachment_bytes", lambda pk: 50 * 1024 * 1024)
     monkeypatch.setattr(
-        applescript, "append_to_note", lambda cid, text: {"name": "Trip photos"}
+        applescript, "append_to_note",
+        lambda cid, text, markdown=False: {"name": "Trip photos"},
     )
     blocked = bridge.append_to_note(10, "more")
     assert blocked.success is False and "MB" in blocked.detail

@@ -40,6 +40,7 @@ from typing import Optional
 from mcp.server.mcpserver import MCPServer
 
 from .hybrid import HybridBridge
+from .richtext import SUPPORTED_MARKDOWN
 from .models import (
     Attachment,
     Folder,
@@ -114,6 +115,20 @@ def _decorate(result: SearchResult) -> SearchResult:
         if note.id:
             note.open_link = weblink.open_link(note.id)
     return result
+
+
+def _is_markdown(format: str) -> bool:
+    """Validate the format argument, rejecting typos loudly.
+
+    Silently treating an unrecognised value as plain text would publish
+    raw Markdown markers into the user's note.
+    """
+    normalised = (format or "plain").strip().lower()
+    if normalised not in {"plain", "markdown"}:
+        raise ValueError(
+            f'Unknown format {format!r}: use "plain" or "markdown".'
+        )
+    return normalised == "markdown"
 
 
 def _parse_date(value: Optional[str], name: str) -> Optional[datetime]:
@@ -280,6 +295,7 @@ def create_note(
     title: str,
     body: str,
     folder: Optional[str] = None,
+    format: str = "plain",
 ) -> WriteResult:
     """Create a new note in Notes.app.
 
@@ -288,17 +304,26 @@ def create_note(
         body: Plain-text body; line breaks are preserved.
         folder: Optional folder name (e.g. "Recipes"). Defaults to the
             account's default Notes folder.
+        format: "plain" (default) leaves the text exactly as given.
+            "markdown" renders rich text — **bold**, *italic*, ~~strikethrough~~, `code`, [links](url), # headings, - bullet lists, and 1. numbered lists.
+            Notes silently ignores colour, font size and blockquotes,
+            and headings render bold rather than becoming Notes' own
+            heading styles.
 
     The note is created by Notes.app itself, so it syncs to iCloud
     natively. Never overwrites existing notes."""
-    result = _require_bridge().create_note(title, body, folder)
+    result = _require_bridge().create_note(
+        title, body, folder, markdown=_is_markdown(format)
+    )
     if result.success and result.id:
         result.open_link = _require_weblink().open_link(result.id)
     return result
 
 
 @mcp.tool()
-def append_to_note(note_id: int, text: str, force: bool = False) -> WriteResult:
+def append_to_note(
+    note_id: int, text: str, force: bool = False, format: str = "plain"
+) -> WriteResult:
     """Append plain text to the end of an existing note.
 
     Line breaks in text are preserved. The edit is performed by
@@ -309,8 +334,12 @@ def append_to_note(note_id: int, text: str, force: bool = False) -> WriteResult:
     them into plain bullets and lose which items are checked. Also
     refused for notes with very large attachments, since those are
     inlined as base64 and can time out — pass force=true for that case
-    only (it never overrides the checklist refusal)."""
-    result = _require_bridge().append_to_note(note_id, text, force=force)
+    only (it never overrides the checklist refusal)
+
+    Set format="markdown" for rich text — **bold**, *italic*, ~~strikethrough~~, `code`, [links](url), # headings, - bullet lists, and 1. numbered lists."""
+    result = _require_bridge().append_to_note(
+        note_id, text, force=force, markdown=_is_markdown(format)
+    )
     if result.success and result.id:
         result.open_link = _require_weblink().open_link(result.id)
     return result
@@ -322,6 +351,7 @@ def update_note(
     body: str,
     title: Optional[str] = None,
     force: bool = False,
+    format: str = "plain",
 ) -> WriteResult:
     """Replace an existing note's body with new text.
 
@@ -339,9 +369,11 @@ def update_note(
     Password-protected notes are refused, as are notes containing
     checklists (Notes.app's scripting interface cannot represent
     checkboxes, so a rewrite would destroy their state) and notes with
-    very large attachments (pass force=true for the size case only)."""
+    very large attachments (pass force=true for the size case only)
+
+    Set format="markdown" for rich text — **bold**, *italic*, ~~strikethrough~~, `code`, [links](url), # headings, - bullet lists, and 1. numbered lists."""
     result = _require_bridge().replace_note_body(
-        note_id, body, title, force=force
+        note_id, body, title, force=force, markdown=_is_markdown(format)
     )
     if result.success and result.id:
         result.open_link = _require_weblink().open_link(result.id)

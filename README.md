@@ -21,7 +21,7 @@ Sibling project: [claude-connector-apple-mail](https://github.com/falconbradley/
 | `get_selected_notes` | The notes you currently have selected in Notes.app, with bodies — for "this note" / "what I'm looking at" |
 | `list_note_attachments` | Everything embedded in a note: images, PDFs, scans, drawings, tables, links — with on-disk paths |
 | `get_attachment` | One attachment by id, including its file path on disk |
-| `create_note` | Create a new note (optionally in a specific folder) — synced natively by Notes.app |
+| `create_note` | Create a new note (optionally in a specific folder) — synced natively by Notes.app. Supports Markdown rich text |
 | `append_to_note` | Append plain text to an existing note |
 | `update_note` | Replace a note's body (overwrites — use `append_to_note` to add without replacing). Keeps the note's title unless you pass a new one. Refused on checklist notes |
 | `create_folder` | Create a new folder in any account |
@@ -60,6 +60,36 @@ When Full Disk Access is missing, reads transparently fall back to a **JXA (Java
 Writes — creating notes and folders, appending, rewriting a body, moving notes — always go through Notes.app scripting (Automation permission), so Notes.app owns every mutation and syncs it to iCloud itself. The note ids used by scripting (`x-coredata://…/ICNote/p<n>`) line up 1:1 with the fast path's ids, so the two engines compose cleanly.
 
 Notes derives a note's **title from the first line of its body**, which makes `update_note` subtler than it looks: replacing the body would rename the note to whatever the new first line is. So when you don't pass a `title`, the server reads the note's current title and re-emits it as the first line — the note keeps its name — and skips that if your new body already starts with the title, so it never ends up duplicated. Pass `title` explicitly to rename.
+
+### Rich text
+
+Write tools take `format="markdown"` to produce real formatting rather than plain text:
+
+```
+create_note(title="Plan", body="**Ship** it by *Friday* — see [the doc](https://ex.com)",
+            format="markdown")
+```
+
+Notes' scripting body is HTML, but Notes keeps only part of what it is handed. What follows was established empirically — by writing a probe note covering every candidate construct and decoding the note's internal format to see what actually survived:
+
+| Markdown | Result in Notes |
+|---|---|
+| `**bold**`, `__bold__` | **bold** |
+| `*italic*`, `_italic_` | *italic* |
+| `~~strikethrough~~` | struck through |
+| `` `code` `` | monospace (Courier) |
+| `[text](url)` | a real link — the URL is stored, not just underlined text |
+| `- item` | bulleted list |
+| `1. item` | numbered list |
+| `# Heading` | **bold text**, not a Notes heading style (see below) |
+
+**What Notes silently drops.** Colour, font size, superscript, and blockquotes are ignored — the *text* always survives, only the styling is lost. Headings are the subtlest case: `<h1>`/`<h2>`/`<h3>` render bold but do not become Notes' own semantic Title/Heading paragraph styles, so a heading looks bold rather than becoming a heading proper.
+
+**Checklists cannot be written at all** — see below. Markdown checkbox syntax (`- [ ]`) produces an ordinary bullet, so it is deliberately not advertised as supported.
+
+`format` defaults to `"plain"`, which escapes everything and formats nothing. That keeps existing behaviour byte-for-byte identical and means a note containing `*asterisks*` or `# hashes` is never reformatted behind your back. An unrecognised `format` value is rejected rather than quietly treated as plain, which would otherwise publish raw Markdown markers into a note.
+
+Markdown is converted in-process — no third-party dependency is added to the shipped bundle for it.
 
 ### Attachments
 
@@ -150,6 +180,7 @@ Once installed, just ask Claude naturally:
 - *"Show me my pinned notes"*
 - *"Read my 'Chase IRA Accounts' note"*
 - *"Create a note in Recipes titled 'Weeknight pasta' with this ingredient list…"*
+- *"Write up these meeting notes with bold headers and a bulleted action list"*
 - *"Append today's meeting takeaways to my 'Meeting notes' note"*
 - *"Summarize the note I have open"* / *"What am I looking at?"*
 - *"Rewrite this note's body to clean up the formatting"*
@@ -192,6 +223,7 @@ claude-connector-apple-notes/
 │       ├── hybrid.py          # Engine selection
 │       ├── weblink.py         # Localhost open-in-Notes redirector
 │       ├── selftest.py        # Fast-path verification
+│       ├── richtext.py        # Markdown -> the HTML subset Notes honours
 │       └── models.py          # Pydantic data models
 ├── tests/                     # Unit tests (synthetic store fixture, mocked JXA)
 └── .github/workflows/         # CI (tests + manifest checks) and release
@@ -224,7 +256,8 @@ No test touches Notes.app or needs Full Disk Access: the store tests build a syn
 - [x] Read the current Notes.app selection
 - [ ] ~~Pin / unpin~~ — **not possible.** Notes.app's scripting dictionary exposes no `pinned` property (verified against `sdef /System/Applications/Notes.app`), so the only route would be writing `ZISPINNED` directly into `NoteStore.sqlite`. That would break the read-only-store invariant and race Core Data and CloudKit sync, so this server won't do it.
 
-**Phase 3 — Rich content (v0.3)**
+**Phase 3 — Rich content (v0.3 – v0.4)**
+- [x] Rich text on write: bold, italic, strikethrough, monospace, links, bulleted and numbered lists (v0.4)
 - [x] Attachments (list, retrieve, resolve to files on disk)
 - [x] Link attachments expose their target URL
 - [ ] Checklists — *read* is implemented internally (`has_checklist`); rendering item text and state in `get_note` is next

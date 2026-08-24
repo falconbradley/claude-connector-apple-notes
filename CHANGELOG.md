@@ -3,6 +3,34 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-08-24
+
+### Added
+
+- **Rich text on write.** `create_note`, `append_to_note` and `update_note`
+  accept `format="markdown"`, rendering `**bold**`, `*italic*`,
+  `~~strikethrough~~`, `` `code` ``, `[links](url)`, `# headings`, and
+  bulleted and numbered lists. Verified end to end by writing a note and
+  decoding Notes' internal format: bold, italic and strikethrough set the
+  expected font traits, code becomes Courier, links store the real URL, and
+  lists become paragraph styles 100 and 102 — with inline formatting
+  preserved inside list items.
+- Markdown is converted in-process (`richtext.py`); no third-party dependency
+  is added to the shipped bundle.
+
+### Notes on fidelity
+
+- `format` defaults to `"plain"`, leaving existing behaviour byte-for-byte
+  identical, so text containing `*asterisks*` or `# hashes` is never
+  reformatted unexpectedly. An unrecognised value raises rather than silently
+  falling back to plain, which would publish raw Markdown into a note.
+- Notes ignores colour, font size, superscript and blockquotes; the text
+  survives, the styling does not.
+- Headings render bold but do not become Notes' semantic Title/Heading
+  paragraph styles.
+- Markdown checkbox syntax produces an ordinary bullet — checklists remain
+  unwritable, so it is not advertised as supported.
+
 ## [0.3.0] — 2026-08-24
 
 ### Fixed
@@ -100,6 +128,7 @@ and full body text, note bodies), clickable open-in-Notes links, a JXA fallback
 for when Full Disk Access is unavailable, and native-scripting writes
 (`create_note`, `append_to_note`).
 
+[0.4.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.4.0
 [0.3.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.3.0
 [0.2.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.2.0
 [0.1.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.1.0

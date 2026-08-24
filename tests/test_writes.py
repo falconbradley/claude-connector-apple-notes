@@ -50,7 +50,7 @@ def test_html_title_omitted_when_none():
 def test_replace_body_sends_full_html(bridge, monkeypatch):
     seen = {}
 
-    def fake(coredata_id, body_text, title=None):
+    def fake(coredata_id, body_text, title=None, markdown=False):
         seen.update(id=coredata_id, body=body_text, title=title)
         return {"id": coredata_id, "name": "Renamed"}
 
@@ -193,8 +193,9 @@ def titled_bridge(bridge, monkeypatch):
     sent = {}
     monkeypatch.setattr(
         applescript, "replace_note_body",
-        lambda cid, body, title=None: sent.update(title=title, body=body)
-        or {"id": cid, "name": title or body.split("\n")[0]},
+        lambda cid, body, title=None, markdown=False: sent.update(
+            title=title, body=body, markdown=markdown
+        ) or {"id": cid, "name": title or body.split("\n")[0]},
     )
     return bridge, sent
 
@@ -224,7 +225,9 @@ def test_unresolvable_title_falls_back_to_notes_native_behaviour(
     sent = {}
     monkeypatch.setattr(
         applescript, "replace_note_body",
-        lambda cid, body, title=None: sent.update(title=title) or {"name": "x"},
+        lambda cid, body, title=None, markdown=False: sent.update(
+            title=title
+        ) or {"name": "x"},
     )
     bridge.replace_note_body(42, "body")
     assert sent["title"] is None
