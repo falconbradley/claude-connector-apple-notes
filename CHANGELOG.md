@@ -3,6 +3,53 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-08-24
+
+### Added
+
+- **Hashtags and mentions.** `get_note` returns a note's `hashtags` and
+  `mentions`; `list_tags` aggregates them across every note with counts and
+  the notes using them; `search_notes(tag=…)` filters by one, with the
+  leading `#`/`@` optional and matching case-insensitive.
+- Notes stores these as inline attachments carrying no link back to their
+  note, so they are associated through the identifiers in each note's
+  attribute runs — the same mechanism that places table placeholders.
+  Classification keys off the display text rather than the token identifier,
+  which is an opaque hash that identifies nothing useful: two different
+  people were observed sharing one.
+
+### Fixed
+
+- `extract_note_text`, `has_checklist` and `extract_attachment_refs` no
+  longer raise on empty input. A note with a NULL body blob exists in a real
+  store and crashed these helpers when called directly.
+- Per-note token state is returned rather than stashed on the store
+  instance, which would have raced between threads — the store hands out
+  thread-local connections.
+
+### Verified
+
+Both halves are verified against real data: seven mentions across three
+notes and a hashtag, extracted, deduplicated per note, counted store-wide,
+searchable, and rendered inline in the body text.
+
+Classifying by display text rather than token identifier turned out to
+matter more than expected. The three inline-attachment kinds observed use
+three unrelated identifier conventions — `HASHTAG` for a hashtag,
+`_1344dcf4db5a2ba12b98daf7ea1bede1` for a mention, and
+`com.apple.notes.inlinetextattachment.dividerline` for a divider — and two
+different people were seen sharing one mention identifier. Keying off the
+leading `#`/`@` sidesteps all of it.
+
+### Known limits
+
+- Read-only, like checklists and tables. A hashtag or mention only exists if
+  it was typed in Notes.app; text that merely looks like `#tag` is not one —
+  writing `#alpha` through the scripting interface produces ordinary text,
+  with no `ICHashtag` row and no attribute-run reference.
+- Filtering by tag needs the fast local-store path and reports that clearly
+  when Full Disk Access is missing, rather than silently returning nothing.
+
 ## [0.5.0] — 2026-08-24
 
 ### Added
@@ -168,6 +215,7 @@ and full body text, note bodies), clickable open-in-Notes links, a JXA fallback
 for when Full Disk Access is unavailable, and native-scripting writes
 (`create_note`, `append_to_note`).
 
+[0.6.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.6.0
 [0.5.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.5.0
 [0.4.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.4.0
 [0.3.0]: https://github.com/falconbradley/claude-connector-apple-notes/releases/tag/v0.3.0

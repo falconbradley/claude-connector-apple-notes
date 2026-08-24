@@ -97,6 +97,8 @@ def extract_note_text(
     Returns None if the blob cannot be decoded (e.g. encrypted note —
     those carry a crypto tag and don't gunzip).
     """
+    if not zdata:
+        return None
     try:
         raw = zlib.decompress(zdata, 47)  # 47 = auto-detect zlib/gzip wrapper
     except zlib.error:
@@ -141,6 +143,8 @@ def has_checklist(zdata: bytes) -> bool:
     round-trip through scripting silently converts checkboxes to bullets
     and loses every done-state; callers use this to refuse that write.
     """
+    if not zdata:
+        return False
     try:
         raw = zlib.decompress(zdata, 47)
         document = _first_length_field(raw, 2)
@@ -167,6 +171,8 @@ def extract_attachment_refs(zdata: bytes) -> list[Tuple[str, Optional[str]]]:
     ids, which do not follow document order once a note has been edited.
     """
     refs: list[Tuple[str, Optional[str]]] = []
+    if not zdata:
+        return refs
     try:
         raw = zlib.decompress(zdata, 47)
         document = _first_length_field(raw, 2)

@@ -29,6 +29,7 @@ Tools provided
   list_note_attachments- Images, PDFs, tables, links embedded in a note
   get_attachment       - One attachment, including its path on disk
   read_table           - A table embedded in a note, as rows + Markdown
+  list_tags            - Every hashtag and mention, with counts
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ from .models import (
     SearchResult,
     SelectionResult,
     Table,
+    Tag,
     WriteResult,
 )
 from .weblink import WebLinkServer
@@ -172,6 +174,7 @@ def search_notes(
     pinned_only: bool = False,
     include_trashed: bool = False,
     search_bodies: bool = True,
+    tag: Optional[str] = None,
     limit: int = 25,
     offset: int = 0,
 ) -> SearchResult:
@@ -186,6 +189,9 @@ def search_notes(
         pinned_only: Only pinned notes.
         include_trashed: Include notes in Recently Deleted.
         search_bodies: Set false to skip body text matching (faster).
+        tag: Only notes carrying this hashtag or mention, e.g. "#remodel"
+            or "@Brad". The leading # or @ is optional, and matching is
+            case-insensitive. Use list_tags to see what exists.
         limit: Max results per page (default 25).
         offset: Pagination offset.
 
@@ -200,6 +206,7 @@ def search_notes(
         pinned_only=pinned_only,
         include_trashed=include_trashed,
         search_bodies=search_bodies,
+        tag=tag,
         limit=max(1, min(limit, 200)),
         offset=max(0, offset),
     )
@@ -212,8 +219,9 @@ def get_note(note_id: int) -> NoteDetail:
 
     Embedded attachments are rendered in place: tables appear inline as
     Markdown (and also come back structured in `tables`), links as their
-    URL, and files as [kind: name]. Password-protected notes return
-    metadata only (their bodies are encrypted by Notes)."""
+    URL, and files as [kind: name]. Hashtags and mentions come back in
+    `hashtags` and `mentions`. Password-protected notes return metadata
+    only (their bodies are encrypted by Notes)."""
     detail = _require_bridge().get_note(note_id)
     if detail is None:
         raise ValueError(f"No note with id {note_id}")
@@ -273,6 +281,21 @@ def get_attachment(attachment_id: int) -> Attachment:
     if attachment is None:
         raise ValueError(f"No attachment with id {attachment_id}")
     return attachment
+
+
+@mcp.tool()
+def list_tags(include_trashed: bool = False) -> list[Tag]:
+    """List every hashtag and mention used across all notes.
+
+    Each entry reports how often it appears and which notes carry it, so
+    this doubles as "who/what do I write about". Pair with
+    search_notes(tag=...) to pull up the notes themselves.
+
+    Note that Notes only creates a real hashtag or mention when one is
+    typed in Notes.app — text that merely looks like "#tag" is ordinary
+    text and will not appear here.
+    """
+    return _require_bridge().list_tags(include_trashed=include_trashed)
 
 
 @mcp.tool()

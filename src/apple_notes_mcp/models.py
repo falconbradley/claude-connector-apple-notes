@@ -43,6 +43,10 @@ class NoteDetail(NoteSummary):
     # Tables embedded in this note, decoded and in document order. Their
     # content is also rendered inline in body_text.
     tables: list[Table] = []
+    # Hashtags and mentions in the note, in document order, deduplicated
+    # and including their leading "#" / "@".
+    hashtags: list[str] = []
+    mentions: list[str] = []
     # True when the note contains checkboxes. Their state exists only in
     # the local store, so the write tools refuse to rewrite such a note.
     has_checklist: bool = False
@@ -84,6 +88,14 @@ class Table(BaseModel):
     rows: list[list[str]]
     # The same content as Markdown, for dropping straight into a reply.
     markdown: str
+
+
+class Tag(BaseModel):
+    """A hashtag or mention, with where it is used."""
+    text: str                       # "#remodel" or "@Brad", as displayed
+    kind: str                       # "hashtag" or "mention"
+    count: int                      # times it appears across all notes
+    note_ids: list[int]             # notes it appears in
 
 
 class SelectionResult(BaseModel):

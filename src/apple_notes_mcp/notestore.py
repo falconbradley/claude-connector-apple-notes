@@ -48,6 +48,7 @@ from .models import (
     NoteSummary,
     SearchResult,
     Table,
+    Tag,
 )
 from .protobuf import extract_attachment_refs, extract_note_text, has_checklist
 from .tables import decode_table, table_to_markdown
@@ -89,6 +90,26 @@ _UTI_KINDS = (
     ("public.movie", "video"),
     ("public.audio", "audio"),
 )
+
+
+def _token_kind(alt_text: Optional[str], token_id: Optional[str]) -> str:
+    """Classify an inline attachment: hashtag, mention, divider, ...
+
+    Classification keys off the display text rather than the token
+    identifier, which is an opaque hash — two different people can share
+    one (observed with @Dad and @John), so it identifies nothing useful.
+    """
+    text = (alt_text or "").strip()
+    if text.startswith("#"):
+        return "hashtag"
+    if text.startswith("@"):
+        return "mention"
+    identifier = token_id or ""
+    if "dividerline" in identifier:
+        return "divider"
+    if "Calculate" in identifier:
+        return "calculation"
+    return "other"
 
 
 def _uti_kind(uti: Optional[str]) -> str:
@@ -215,6 +236,10 @@ class NoteStore:
             # carry their own display text.
             schema["ent_inline"] = ents.get("ICInlineAttachment")
             schema["inline_alt"] = "ZALTTEXT" if "ZALTTEXT" in cols else None
+            schema["inline_token"] = (
+                "ZTOKENCONTENTIDENTIFIER"
+                if "ZTOKENCONTENTIDENTIFIER" in cols else None
+            )
             if schema["ent_attachment"]:
                 ent_a = schema["ent_attachment"]
                 schema["att_title"] = self._pick_populated(
@@ -390,12 +415,21 @@ class NoteStore:
         pinned_only: bool = False,
         include_trashed: bool = False,
         search_bodies: bool = True,
+        tag: Optional[str] = None,
         limit: int = 25,
         offset: int = 0,
     ) -> SearchResult:
         con = self._connect()
         s = self._sch()
         folders = self._folder_map(con)
+
+        tagged: Optional[set[int]] = None
+        if tag:
+            tagged = self.notes_with_token(tag)
+            if not tagged:
+                return SearchResult(
+                    total=0, offset=offset, limit=limit, notes=[], engine="sqlite"
+                )
 
         where = [
             "n.Z_ENT = ?",
@@ -435,6 +469,9 @@ class NoteStore:
             params.append((until.astimezone(timezone.utc) - _CORE_DATA_EPOCH).total_seconds())
         if pinned_only and s["pinned"]:
             where.append(f"n.{s['pinned']} = 1")
+        if tagged is not None:
+            where.append("n.Z_PK IN (" + ",".join("?" * len(tagged)) + ")")
+            params.extend(sorted(tagged))
 
         select_cols = self._note_select_columns()
         sql = (
@@ -504,7 +541,15 @@ class NoteStore:
             detail.has_checklist = has_checklist(zdata)
             if body is not None:
                 refs = extract_attachment_refs(zdata)
-                detail.tables, renderings = self._note_tables(note_id, refs)
+                detail.tables, renderings, tokens = self._note_placeholders(
+                    note_id, refs
+                )
+                seen_tags, seen_mentions = [], []
+                for kind, text in tokens:
+                    bucket = seen_tags if kind == "hashtag" else seen_mentions
+                    if text not in bucket:
+                        bucket.append(text)
+                detail.hashtags, detail.mentions = seen_tags, seen_mentions
                 for rendering in renderings:
                     body = body.replace("\ufffc", rendering, 1)
                 body = body.replace("\ufffc", "[attachment]")
@@ -641,13 +686,14 @@ class NoteStore:
             markdown=table_to_markdown(rows),
         )
 
-    def _note_tables(
+    def _note_placeholders(
         self, note_id: int, refs: list[tuple[str, Optional[str]]]
-    ) -> tuple[list[Table], list[str]]:
-        """Decode a note's attachments in document order.
+    ) -> tuple[list[Table], list[str], list[tuple[str, str]]]:
+        """Resolve a note's attachments in document order.
 
-        Returns the tables plus one rendering per placeholder, so the
-        caller can substitute them back into the body text positionally.
+        Returns the decoded tables, one rendering per placeholder so the
+        caller can substitute them back into the body positionally, and
+        the (kind, text) of each hashtag or mention encountered.
         """
         con = self._connect()
         s = self._sch()
@@ -677,12 +723,16 @@ class NoteStore:
 
         tables: list[Table] = []
         renderings: list[str] = []
+        tokens: list[tuple[str, str]] = []
         for identifier, uti in refs:
             row = by_identifier.get(identifier)
             if row is None:
                 # Dividers, hashtags and mentions render as their own
                 # display text ("---", "#tag", "@name").
-                alt = inline.get(identifier)
+                alt, token_id = inline.get(identifier, (None, None))
+                kind = _token_kind(alt, token_id)
+                if kind in ("hashtag", "mention") and alt:
+                    tokens.append((kind, alt.strip()))
                 renderings.append(alt if alt else "[attachment]")
                 continue
             kind = _uti_kind(row["uti"] or uti)
@@ -709,27 +759,120 @@ class NoteStore:
                 renderings.append(f"[{kind}: {name}]")
             else:
                 renderings.append(f"[{kind}]")
-        return tables, renderings
+        return tables, renderings, tokens
 
     def _inline_attachments(
         self, con: sqlite3.Connection, identifiers: list[str]
-    ) -> dict[str, str]:
-        """Display text for inline attachments, keyed by identifier."""
+    ) -> dict[str, tuple[Optional[str], Optional[str]]]:
+        """(display text, token id) for inline attachments, by identifier."""
         s = self._sch()
         if not identifiers or not s.get("ent_inline") or not s.get("inline_alt"):
             return {}
-        out: dict[str, str] = {}
+        token_col = (
+            "ZTOKENCONTENTIDENTIFIER" if s.get("inline_token") else "NULL"
+        )
+        out: dict[str, tuple[Optional[str], Optional[str]]] = {}
         for i in range(0, len(identifiers), 500):
             chunk = identifiers[i:i + 500]
             for row in con.execute(
-                f"SELECT ZIDENTIFIER, {s['inline_alt']} AS alt "
+                f"SELECT ZIDENTIFIER, {s['inline_alt']} AS alt, "
+                f"{token_col} AS token "
                 f"FROM ZICCLOUDSYNCINGOBJECT WHERE Z_ENT=? AND ZIDENTIFIER IN ("
                 + ",".join("?" * len(chunk)) + ")",
                 (s["ent_inline"], *chunk),
             ):
-                if row["ZIDENTIFIER"] and row["alt"]:
-                    out[row["ZIDENTIFIER"]] = row["alt"]
+                if row["ZIDENTIFIER"]:
+                    out[row["ZIDENTIFIER"]] = (row["alt"], row["token"])
         return out
+
+    # ------------------------------------------------------------------
+    # Hashtags and mentions
+    #
+    # Inline attachments carry no link back to their note, so the only
+    # way to associate them is through the identifiers in each note's
+    # attribute runs — which means decoding note bodies, the same cost
+    # as a full-text body search.
+    # ------------------------------------------------------------------
+
+    def note_tokens(self, note_id: int) -> list[tuple[str, str]]:
+        """(kind, text) for each hashtag/mention in a note, in order."""
+        con = self._connect()
+        s = self._sch()
+        row = con.execute(
+            "SELECT d.ZDATA FROM ZICCLOUDSYNCINGOBJECT n "
+            "JOIN ZICNOTEDATA d ON n.ZNOTEDATA = d.Z_PK "
+            "WHERE n.Z_ENT=? AND n.Z_PK=?",
+            (s["ent_note"], note_id),
+        ).fetchone()
+        if row is None or not row["ZDATA"]:
+            return []
+        refs = extract_attachment_refs(row["ZDATA"])
+        if not refs:
+            return []
+        inline = self._inline_attachments(
+            con, [identifier for identifier, _uti in refs]
+        )
+        tokens = []
+        for identifier, _uti in refs:
+            alt, token_id = inline.get(identifier, (None, None))
+            kind = _token_kind(alt, token_id)
+            if kind in ("hashtag", "mention") and alt:
+                tokens.append((kind, alt.strip()))
+        return tokens
+
+    def list_tags(self, include_trashed: bool = False) -> list[Tag]:
+        """Every hashtag and mention across all notes, with counts."""
+        con = self._connect()
+        s = self._sch()
+        folders = self._folder_map(con)
+        found: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in con.execute(
+            f"SELECT n.Z_PK, n.ZFOLDER, d.ZDATA FROM ZICCLOUDSYNCINGOBJECT n "
+            f"JOIN ZICNOTEDATA d ON n.ZNOTEDATA = d.Z_PK WHERE n.Z_ENT=?",
+            (s["ent_note"],),
+        ):
+            if not include_trashed:
+                folder = folders.get(row["ZFOLDER"])
+                if folder is None or folder["is_trash"]:
+                    continue
+            refs = extract_attachment_refs(row["ZDATA"])
+            if not refs:
+                continue
+            inline = self._inline_attachments(
+                con, [identifier for identifier, _uti in refs]
+            )
+            for identifier, _uti in refs:
+                alt, token_id = inline.get(identifier, (None, None))
+                kind = _token_kind(alt, token_id)
+                if kind not in ("hashtag", "mention") or not alt:
+                    continue
+                key = (kind, alt.strip())
+                entry = found.setdefault(
+                    key, {"count": 0, "notes": []}
+                )
+                entry["count"] += 1
+                if row["Z_PK"] not in entry["notes"]:
+                    entry["notes"].append(row["Z_PK"])
+        tags = [
+            Tag(text=text, kind=kind, count=v["count"], note_ids=v["notes"])
+            for (kind, text), v in found.items()
+        ]
+        tags.sort(key=lambda t: (t.kind, -t.count, t.text.lower()))
+        return tags
+
+    def notes_with_token(self, text: str) -> set[int]:
+        """Note ids carrying a given hashtag or mention (case-insensitive)."""
+        wanted = text.strip().lower()
+        if not wanted:
+            return set()
+        # Accept "remodel" for "#remodel" so callers need not guess the sigil.
+        candidates = {wanted, f"#{wanted}", f"@{wanted}"}
+        return {
+            note_id
+            for tag in self.list_tags(include_trashed=True)
+            if tag.text.lower() in candidates
+            for note_id in tag.note_ids
+        }
 
     # ------------------------------------------------------------------
     # Attachment internals

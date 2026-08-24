@@ -14,7 +14,7 @@ Sibling project: [claude-connector-apple-mail](https://github.com/falconbradley/
 |------|-------------|
 | `get_stats` | Total notes, pinned, trashed, password-protected, folder and account counts |
 | `list_folders` | Every account/folder with note counts |
-| `search_notes` | Rich search: free text over titles, snippets, **and full body text**; folder, date range, pinned. Every result includes clickable open-in-Notes links |
+| `search_notes` | Rich search: free text over titles, snippets, **and full body text**; folder, date range, pinned, hashtag/mention. Every result includes clickable open-in-Notes links |
 | `get_note` | Full note with extracted plain-text body and metadata |
 | `get_note_link` | An `applenotes://` deep link + a clickable http link for the note |
 | `open_note_in_notes` | Open a note directly in Notes.app (for chat UIs that block custom URL schemes) |
@@ -22,6 +22,7 @@ Sibling project: [claude-connector-apple-mail](https://github.com/falconbradley/
 | `list_note_attachments` | Everything embedded in a note: images, PDFs, scans, drawings, tables, links — with on-disk paths |
 | `get_attachment` | One attachment by id, including its file path on disk |
 | `read_table` | A table embedded in a note, as structured rows and as Markdown |
+| `list_tags` | Every hashtag and mention across all notes, with counts and the notes using them |
 | `create_note` | Create a new note (optionally in a specific folder) — synced natively by Notes.app. Supports Markdown rich text |
 | `append_to_note` | Append plain text to an existing note |
 | `update_note` | Replace a note's body (overwrites — use `append_to_note` to add without replacing). Keeps the note's title unless you pass a new one. Refused on checklist notes |
@@ -123,6 +124,18 @@ Verified against every table in a real store — all 24 decode, and each was com
 
 Placeholders for everything else render as what they point at: `[image: beach.jpeg]`, `[link: https://…]`, and dividers, hashtags and mentions as their own text.
 
+### Hashtags and mentions
+
+`get_note` returns a note's `hashtags` and `mentions`; `list_tags` aggregates them across every note with counts and the notes using them; and `search_notes(tag=…)` filters by one. The leading `#`/`@` is optional and matching is case-insensitive, so `tag="brad"` finds `@Brad`.
+
+Notes stores these as **inline attachments that carry no link back to their note**, so they are associated the same way table placeholders are — through the identifiers in each note's attribute runs.
+
+Classification keys off the **display text**, not the token identifier. That matters: the three inline-attachment kinds observed use three unrelated identifier conventions — `HASHTAG` for a hashtag, `_1344dcf4db5a2ba12b98daf7ea1bede1` for a mention, `com.apple.notes.inlinetextattachment.dividerline` for a divider — and two different people were seen sharing a single mention identifier. The leading `#`/`@` is the only reliable signal.
+
+The same mechanism also carries dividers (`---`) and inline calculation results, which render in the body text but are deliberately not treated as tags.
+
+**A real hashtag or mention only exists if it was typed in Notes.app.** Text that merely looks like `#tag` is ordinary text: writing `#alpha` through the scripting interface produces no hashtag token at all (verified — zero `ICHashtag` rows and no attribute-run reference resulted). So this is a read-only feature, like checklists and tables, and `list_tags` will not show tags that were never tokenised.
+
 ### Checklists are read-only, and the write tools know it
 
 Notes stores checkbox state only in its own binary body format. Its AppleScript/JXA interface cannot represent it in **either** direction: reading a checklist note's `body` yields plain `<ul><li>` with no checked attribute, and writing `<ul class="checklist"><li checked>` back produces an ordinary bulleted list.
@@ -208,6 +221,7 @@ Once installed, just ask Claude naturally:
 - *"What's attached to my Cannon Beach note?"* / *"Show me the PDF from that note"*
 - *"What links have I saved in my notes?"*
 - *"Pull the cost table out of my remodel note"*
+- *"What have I tagged #remodel?"* / *"Which notes mention @Brad?"*
 - *"Open that note in Notes"*
 
 ---
@@ -286,7 +300,7 @@ No test touches Notes.app or needs Full Disk Access: the store tests build a syn
 - [ ] ~~Checklists (toggle)~~ — **not possible.** Notes' scripting interface cannot represent checkbox state in either direction (verified both ways), so the write tools refuse checklist notes instead
 - [x] Tables (read as Markdown) — decoded from the gzipped CRDT payload in `ZMERGEABLEDATA1` (v0.5)
 - [ ] Tables (write) — would mean synthesising a CRDT document; not attempted
-- [ ] Hashtags and mentions — `ICHashtag` exists in the schema
+- [x] Hashtags and mentions — extracted, listed store-wide, and searchable (v0.6)
 
 ---
 

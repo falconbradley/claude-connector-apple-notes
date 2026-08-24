@@ -21,6 +21,7 @@ EXPECTED_TOOLS = {
     "get_stats",
     "list_folders",
     "list_note_attachments",
+    "list_tags",
     "move_note",
     "open_note_in_notes",
     "read_table",

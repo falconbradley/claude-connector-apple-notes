@@ -27,6 +27,7 @@ from .models import (
     SearchResult,
     SelectionResult,
     Table,
+    Tag,
     WriteResult,
 )
 from .notestore import NoteStore, NoteStoreError
@@ -96,6 +97,7 @@ class HybridBridge:
         pinned_only: bool = False,
         include_trashed: bool = False,
         search_bodies: bool = True,
+        tag: Optional[str] = None,
         limit: int = 25,
         offset: int = 0,
     ) -> SearchResult:
@@ -104,7 +106,13 @@ class HybridBridge:
             return fast.search_notes(
                 query=query, folder=folder, since=since, until=until,
                 pinned_only=pinned_only, include_trashed=include_trashed,
-                search_bodies=search_bodies, limit=limit, offset=offset,
+                search_bodies=search_bodies, tag=tag, limit=limit, offset=offset,
+            )
+        if tag:
+            raise NoteStoreError(
+                "Filtering by hashtag or mention needs the fast local-store "
+                "path, which is unavailable — grant Full Disk Access to the "
+                "launcher binary (see the README) and try again."
             )
         raw = applescript.search_notes(query, folder, limit + offset)
         notes = [
@@ -173,6 +181,10 @@ class HybridBridge:
     def get_table(self, attachment_id: int) -> Optional[Table]:
         fast = self._require_fast("Reading a table")
         return fast.get_table(attachment_id)
+
+    def list_tags(self, include_trashed: bool = False) -> list[Tag]:
+        fast = self._require_fast("Listing hashtags and mentions")
+        return fast.list_tags(include_trashed=include_trashed)
 
     def _require_fast(self, what: str) -> NoteStore:
         fast = self._fast()
