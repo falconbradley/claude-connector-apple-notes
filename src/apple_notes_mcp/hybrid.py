@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Optional
 
 from . import applescript
+from .launcher import full_disk_access_steps
 from .models import (
     Attachment,
     Folder,
@@ -111,8 +112,8 @@ class HybridBridge:
         if tag:
             raise NoteStoreError(
                 "Filtering by hashtag or mention needs the fast local-store "
-                "path, which is unavailable — grant Full Disk Access to the "
-                "launcher binary (see the README) and try again."
+                "path, which is unavailable without Full Disk Access.\n\n"
+                + full_disk_access_steps()
             )
         raw = applescript.search_notes(query, folder, limit + offset)
         notes = [
@@ -191,8 +192,8 @@ class HybridBridge:
         if fast is None:
             raise NoteStoreError(
                 f"{what} needs the fast local-store path, which is "
-                "unavailable — grant Full Disk Access to the launcher "
-                "binary (see the README) and try again."
+                "unavailable without Full Disk Access.\n\n"
+                + full_disk_access_steps()
             )
         return fast
 
